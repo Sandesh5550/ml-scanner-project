@@ -1,4 +1,4 @@
-# FoodScanner AI Model Upgrade (72% -> 92%+)
+# FoodScanner AI Model Upgrade
 
 ## Executive summary
 This upgrade introduces a large-scale dataset pipeline, extensive feature engineering (50+ features), and an advanced ensemble model training workflow.
@@ -127,7 +127,8 @@ Outputs:
 ## Results
 - Before: ~313-sample small training pipeline, ~72% accuracy (baseline)
 - After: 50,000+ OpenFoodFacts samples + Indian dataset, 50+ engineered features, ensemble model
-- Target: **92%+ accuracy**
+- Measured (see `reports/evaluation_results.json`): Random Forest reaches about **88% accuracy** (macro F1 about 0.86) on a held-out stratified 20% split. The earlier 92% figure was a target and was not reached.
+- Caveat: NutriScore is a deterministic formula over nutrition values, so the model approximates that formula rather than learning new health signal.
 
 To reproduce:
 1. Collect:
