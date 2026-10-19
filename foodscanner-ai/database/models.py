@@ -26,6 +26,7 @@ class User(Base):
 
     scan_history: Mapped[list["ScanHistory"]] = relationship("ScanHistory", back_populates="user")
     food_logs: Mapped[list["FoodLog"]] = relationship("FoodLog", back_populates="user")
+    ocr_jobs: Mapped[list["OCRJob"]] = relationship("OCRJob", back_populates="user")
 
 
 class Product(Base):
@@ -104,3 +105,22 @@ class FoodLog(Base):
     consumed_at: Mapped[str] = mapped_column(String, nullable=False)
 
     user: Mapped[User] = relationship("User", back_populates="food_logs")
+
+
+class OCRJob(Base):
+    __tablename__ = "ocr_jobs"
+    __table_args__ = (
+        Index("ix_ocr_jobs_user_id", "user_id"),
+        Index("ix_ocr_jobs_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    image_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    user: Mapped[User] = relationship("User", back_populates="ocr_jobs")

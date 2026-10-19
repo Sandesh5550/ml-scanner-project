@@ -81,6 +81,26 @@ def run_migrations(engine: Engine) -> None:
                 for macro_col in ("fat", "sugar", "salt", "protein", "fiber", "carbs"):
                     if macro_col not in log_cols:
                         conn.execute(text(f"ALTER TABLE daily_food_log ADD COLUMN {macro_col} FLOAT"))
+
+            # OCR jobs table migrations
+            if "ocr_jobs" not in table_names:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS ocr_jobs (
+                            id VARCHAR(64) PRIMARY KEY,
+                            user_id INTEGER NOT NULL,
+                            status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                            image_hash VARCHAR(64),
+                            result_json TEXT,
+                            error_message TEXT,
+                            created_at VARCHAR(100) NOT NULL,
+                            completed_at VARCHAR(100),
+                            FOREIGN KEY (user_id) REFERENCES users(id)
+                        )
+                        """
+                    )
+                )
     except Exception as e:
         logger.error(f"Migration check failed: {e}")
         raise

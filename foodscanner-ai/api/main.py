@@ -10,18 +10,19 @@ import os
 import random
 import re
 import time
+import uuid
 from contextlib import asynccontextmanager
+from datetime import date, datetime, timezone
 from typing import Any
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import func, select
-from datetime import date
 
 from database.db_session import get_db
-from database.orm import init_db as orm_init_db
-from database.models import FoodLog, ScanHistory, User
+from database.orm import SessionLocal, init_db as orm_init_db
+from database.models import FoodLog, OCRJob, ScanHistory, User
 from services.barcode_lookup import lookup_product
 from services.product_search import search_products
 from services.recommendation_engine import get_healthier_alternatives, infer_food_category
@@ -50,6 +51,8 @@ from services.rate_limiter import enforce_rate_limit
 
 # Load environment configuration early
 load_environment()
+
+logger = logging.getLogger(__name__)
 
 import pandas as pd
 from rapidfuzz import fuzz
@@ -146,6 +149,7 @@ class ChatRequest(BaseModel):
 class OCRRequest(BaseModel):
     image_base64: str
     claims: list[str] | None = None
+    async_mode: bool | None = Field(default=False, description="Whether to run OCR asynchronously")
 
 
 class FoodLogRequest(BaseModel):
@@ -289,11 +293,74 @@ def _parse_nutrition_from_text(text: str) -> dict:
     return parse_structured_ocr(text)
 
 
+def execute_ocr_background_task(
+    job_id: str,
+    image_bytes: bytes,
+    claims: list[str] | None = None,
+) -> None:
+    """Execute OCR pipeline in background task and persist result."""
+    task_db = SessionLocal()
+    try:
+        job = task_db.query(OCRJob).filter(OCRJob.id == job_id).first()
+        if not job:
+            return
+
+        job.status = "processing"
+        task_db.commit()
+
+        result = process_image_ocr(image_bytes)
+
+        if claims:
+            eff_nutrition = {
+                "calories": result.get("calories"),
+                "fat": result.get("fat"),
+                "sugar": result.get("sugar"),
+                "salt": result.get("salt"),
+                "protein": result.get("protein"),
+                "fiber": result.get("fiber"),
+                "carbs": result.get("carbs"),
+            }
+            ing_raw = ""
+            if isinstance(result.get("ingredients"), dict):
+                ing_raw = result["ingredients"].get("raw_text") or ""
+            result["claim_verification"] = verify_claims(
+                claims=claims,
+                nutrition=eff_nutrition,
+                ingredients=ing_raw,
+            )
+
+        job.status = "completed"
+        job.result_json = json.dumps(result)
+        job.completed_at = datetime.now(timezone.utc).isoformat()
+        task_db.commit()
+    except Exception as exc:
+        logger.exception("OCR background task failed for job %s: %s", job_id, exc)
+        try:
+            job = task_db.query(OCRJob).filter(OCRJob.id == job_id).first()
+            if job:
+                job.status = "failed"
+                job.error_message = "OCR processing failed"
+                job.completed_at = datetime.now(timezone.utc).isoformat()
+                task_db.commit()
+        except Exception:
+            pass
+    finally:
+        try:
+            del image_bytes
+        except Exception:
+            pass
+        task_db.close()
+
+
 @app.post("/ocr", tags=["tracking"])
 def ocr_nutrition_label(
     req: OCRRequest,
     request: Request,
+    response: Response,
+    background_tasks: BackgroundTasks,
+    async_param: bool = Query(False, alias="async"),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> dict:
     enforce_rate_limit("ocr", request, user_id=current_user.id)
 
@@ -324,6 +391,40 @@ def ocr_nutrition_label(
     if not is_valid:
         raise HTTPException(status_code=status_code, detail=err_detail)
 
+    is_async = bool(async_param or req.async_mode)
+    if is_async:
+        img_hash = hashlib.sha256(image_bytes).hexdigest()
+        job_id = f"ocr_{uuid.uuid4().hex}"
+        now_str = datetime.now(timezone.utc).isoformat()
+
+        job = OCRJob(
+            id=job_id,
+            user_id=current_user.id,
+            status="pending",
+            image_hash=img_hash,
+            result_json=None,
+            error_message=None,
+            created_at=now_str,
+            completed_at=None,
+        )
+        db.add(job)
+        db.commit()
+
+        background_tasks.add_task(
+            execute_ocr_background_task,
+            job_id=job_id,
+            image_bytes=image_bytes,
+            claims=req.claims,
+        )
+
+        response.status_code = status.HTTP_202_ACCEPTED
+        return {
+            "job_id": job_id,
+            "status": "pending",
+            "created_at": now_str,
+            "poll_url": f"/ocr/jobs/{job_id}",
+        }
+
     result = process_image_ocr(image_bytes)
 
     # Optional Batch 5 Claim Verification integration if claims are passed
@@ -347,6 +448,38 @@ def ocr_nutrition_label(
         )
 
     return result
+
+
+@app.get("/ocr/jobs/{job_id}", tags=["tracking"])
+def get_ocr_job_status(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Retrieve the status and result of an OCR background processing job."""
+    job = (
+        db.query(OCRJob)
+        .filter(OCRJob.id == job_id, OCRJob.user_id == current_user.id)
+        .first()
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="OCR job not found")
+
+    result_data = None
+    if job.result_json:
+        try:
+            result_data = json.loads(job.result_json)
+        except Exception:
+            result_data = None
+
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "created_at": job.created_at,
+        "completed_at": job.completed_at,
+        "result": result_data,
+        "error": job.error_message,
+    }
 
 
 @app.post("/food-log", tags=["tracking"])

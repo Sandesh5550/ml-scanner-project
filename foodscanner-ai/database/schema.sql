@@ -79,3 +79,18 @@ CREATE INDEX IF NOT EXISTS idx_products_name ON products(product_name);
 CREATE INDEX IF NOT EXISTS idx_scan_history_barcode ON scan_history(barcode);
 CREATE INDEX IF NOT EXISTS idx_nutrition_product_id ON nutrition(product_id);
 CREATE INDEX IF NOT EXISTS idx_daily_food_log_consumed_at ON daily_food_log(consumed_at);
+
+CREATE TABLE IF NOT EXISTS ocr_jobs (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    image_hash TEXT,
+    result_json TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ocr_jobs_user_id ON ocr_jobs(user_id);
+CREATE INDEX IF NOT EXISTS idx_ocr_jobs_status ON ocr_jobs(status);
