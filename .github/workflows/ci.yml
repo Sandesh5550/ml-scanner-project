@@ -79,3 +79,19 @@ jobs:
       - name: Run Mobile Unit Tests
         run: |
           npm test
+
+  docker-validation:
+    name: Docker Build & Compose Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose Configuration
+        run: |
+          docker compose config -q
+
+      - name: Build Backend Docker Image
+        run: |
+          docker build -t foodscanner-ai:ci ./foodscanner-ai

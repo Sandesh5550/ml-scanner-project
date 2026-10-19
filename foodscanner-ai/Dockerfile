@@ -17,7 +17,13 @@ RUN apt-get update \
 COPY requirements-deploy.txt .
 RUN pip install --no-cache-dir -r requirements-deploy.txt
 
+RUN groupadd -g 1001 appuser \
+    && useradd -u 1001 -g appuser -s /bin/sh -m appuser
+
 COPY . .
+RUN chown -R appuser:appuser /app
+
+USER appuser
 
 EXPOSE 7860
 
