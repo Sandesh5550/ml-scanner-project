@@ -121,6 +121,7 @@ class OCRJob(Base):
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
+    started_at: Mapped[str | None] = mapped_column(String(100), nullable=True)
     completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
     user: Mapped[User] = relationship("User", back_populates="ocr_jobs")

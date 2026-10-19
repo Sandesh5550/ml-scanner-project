@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS ocr_jobs (
     result_json TEXT,
     error_message TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at TEXT,
     completed_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );

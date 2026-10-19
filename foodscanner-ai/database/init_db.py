@@ -95,12 +95,17 @@ def run_migrations(engine: Engine) -> None:
                             result_json TEXT,
                             error_message TEXT,
                             created_at VARCHAR(100) NOT NULL,
+                            started_at VARCHAR(100),
                             completed_at VARCHAR(100),
                             FOREIGN KEY (user_id) REFERENCES users(id)
                         )
                         """
                     )
                 )
+            else:
+                ocr_cols = {c["name"] for c in inspector.get_columns("ocr_jobs")}
+                if "started_at" not in ocr_cols:
+                    conn.execute(text("ALTER TABLE ocr_jobs ADD COLUMN started_at VARCHAR(100)"))
     except Exception as e:
         logger.error(f"Migration check failed: {e}")
         raise

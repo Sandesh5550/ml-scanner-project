@@ -81,6 +81,18 @@ async def lifespan(app: FastAPI):
     # Validate required runtime configuration early before accepting requests
     validate_runtime_config(raise_error=True)
     orm_init_db()
+
+    # Startup sweep: recover any stranded jobs from previous process restarts
+    startup_db = SessionLocal()
+    try:
+        reaped_count = recover_stale_ocr_jobs(startup_db)
+        if reaped_count > 0:
+            logger.info("Startup sweep recovered %d stale OCR jobs.", reaped_count)
+    except Exception as exc:
+        logger.warning("Startup stale OCR job recovery warning: %s", exc)
+    finally:
+        startup_db.close()
+
     print("FoodScanner API running. For Expo Go, start uvicorn with --host 0.0.0.0 and open http://<your-lan-ip>:8000/health")
     yield
 
@@ -293,6 +305,82 @@ def _parse_nutrition_from_text(text: str) -> dict:
     return parse_structured_ocr(text)
 
 
+def get_ocr_job_timeout_seconds() -> int:
+    """Retrieve configurable timeout for OCR jobs (default: 120s)."""
+    raw = os.environ.get("OCR_JOB_TIMEOUT_SECONDS")
+    if raw:
+        try:
+            return max(1, int(raw.strip()))
+        except (ValueError, TypeError):
+            pass
+    return 120
+
+
+def _parse_utc_iso(dt_str: str | None) -> datetime | None:
+    """Parse UTC ISO-8601 string safely into a timezone-aware datetime."""
+    if not dt_str:
+        return None
+    try:
+        clean_str = dt_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def recover_stale_ocr_jobs(
+    db: Session,
+    job_id: str | None = None,
+    timeout_seconds: int | None = None,
+) -> int:
+    """Detect and recover stale pending or processing OCR jobs exceeding the timeout.
+
+    Uses atomic conditional database updates to ensure completed results cannot be overwritten.
+    """
+    if timeout_seconds is None:
+        timeout_seconds = get_ocr_job_timeout_seconds()
+
+    now = datetime.now(timezone.utc)
+    now_str = now.isoformat()
+
+    query = db.query(OCRJob).filter(OCRJob.status.in_(["pending", "processing"]))
+    if job_id:
+        query = query.filter(OCRJob.id == job_id)
+
+    candidates = query.all()
+    stale_ids = []
+    for candidate in candidates:
+        ref_time = _parse_utc_iso(candidate.started_at) if candidate.status == "processing" else None
+        if not ref_time:
+            ref_time = _parse_utc_iso(candidate.created_at)
+
+        if ref_time and (now - ref_time).total_seconds() >= timeout_seconds:
+            stale_ids.append(candidate.id)
+
+    if not stale_ids:
+        return 0
+
+    rows_updated = (
+        db.query(OCRJob)
+        .filter(
+            OCRJob.id.in_(stale_ids),
+            OCRJob.status.in_(["pending", "processing"]),
+        )
+        .update(
+            {
+                OCRJob.status: "failed",
+                OCRJob.error_message: "OCR processing timed out or worker restarted. Please retry your scan.",
+                OCRJob.completed_at: now_str,
+            },
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    return rows_updated
+
+
 def execute_ocr_background_task(
     job_id: str,
     image_bytes: bytes,
@@ -301,12 +389,25 @@ def execute_ocr_background_task(
     """Execute OCR pipeline in background task and persist result."""
     task_db = SessionLocal()
     try:
-        job = task_db.query(OCRJob).filter(OCRJob.id == job_id).first()
-        if not job:
-            return
-
-        job.status = "processing"
+        now_str = datetime.now(timezone.utc).isoformat()
+        # Atomic transition to processing and record started_at
+        rows_started = (
+            task_db.query(OCRJob)
+            .filter(OCRJob.id == job_id, OCRJob.status == "pending")
+            .update(
+                {
+                    OCRJob.status: "processing",
+                    OCRJob.started_at: now_str,
+                },
+                synchronize_session=False,
+            )
+        )
         task_db.commit()
+        if rows_started == 0:
+            job_check = task_db.query(OCRJob).filter(OCRJob.id == job_id).first()
+            if not job_check or job_check.status != "processing":
+                logger.info("OCR job %s is not pending or processing; skipping execution.", job_id)
+                return
 
         result = process_image_ocr(image_bytes)
 
@@ -329,19 +430,39 @@ def execute_ocr_background_task(
                 ingredients=ing_raw,
             )
 
-        job.status = "completed"
-        job.result_json = json.dumps(result)
-        job.completed_at = datetime.now(timezone.utc).isoformat()
+        # Atomic update: only write result if job remains in processing state!
+        completed_now_str = datetime.now(timezone.utc).isoformat()
+        rows_completed = (
+            task_db.query(OCRJob)
+            .filter(OCRJob.id == job_id, OCRJob.status == "processing")
+            .update(
+                {
+                    OCRJob.status: "completed",
+                    OCRJob.result_json: json.dumps(result),
+                    OCRJob.completed_at: completed_now_str,
+                },
+                synchronize_session=False,
+            )
+        )
         task_db.commit()
+        if rows_completed == 0:
+            logger.info("OCR job %s was transitioned out of processing before completion; skipped result write.", job_id)
     except Exception as exc:
         logger.exception("OCR background task failed for job %s: %s", job_id, exc)
         try:
-            job = task_db.query(OCRJob).filter(OCRJob.id == job_id).first()
-            if job:
-                job.status = "failed"
-                job.error_message = "OCR processing failed"
-                job.completed_at = datetime.now(timezone.utc).isoformat()
-                task_db.commit()
+            failed_now_str = datetime.now(timezone.utc).isoformat()
+            task_db.query(OCRJob).filter(
+                OCRJob.id == job_id,
+                OCRJob.status.in_(["pending", "processing"]),
+            ).update(
+                {
+                    OCRJob.status: "failed",
+                    OCRJob.error_message: "OCR processing failed",
+                    OCRJob.completed_at: failed_now_str,
+                },
+                synchronize_session=False,
+            )
+            task_db.commit()
         except Exception:
             pass
     finally:
@@ -405,6 +526,7 @@ def ocr_nutrition_label(
             result_json=None,
             error_message=None,
             created_at=now_str,
+            started_at=None,
             completed_at=None,
         )
         db.add(job)
@@ -457,6 +579,9 @@ def get_ocr_job_status(
     db: Session = Depends(get_db),
 ) -> dict:
     """Retrieve the status and result of an OCR background processing job."""
+    # Check and recover if this specific job has timed out
+    recover_stale_ocr_jobs(db, job_id=job_id)
+
     job = (
         db.query(OCRJob)
         .filter(OCRJob.id == job_id, OCRJob.user_id == current_user.id)
@@ -476,6 +601,7 @@ def get_ocr_job_status(
         "job_id": job.id,
         "status": job.status,
         "created_at": job.created_at,
+        "started_at": job.started_at,
         "completed_at": job.completed_at,
         "result": result_data,
         "error": job.error_message,
