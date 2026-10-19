@@ -43,11 +43,21 @@ from services.ocr_service import (
     run_ocr_engine,
     validate_image_payload,
     MAX_BASE64_CHAR_LIMIT,
+    OCRStatus,
 )
 from services.personalization import get_personalized_analysis, calculate_personalized_calorie_estimate
 from services.ai_nutrition_assistant import ask_nutrition_assistant
 from services.config import load_environment, validate_runtime_config
 from services.rate_limiter import enforce_rate_limit
+from services.metrics import (
+    get_metrics_exposition,
+    normalize_metric_endpoint,
+    record_http_request,
+    record_ocr_confidence,
+    record_ocr_job_created,
+    record_ocr_job_status,
+    record_ocr_stale_reaped,
+)
 
 # Load environment configuration early
 load_environment()
@@ -107,6 +117,34 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def prometheus_metrics_middleware(request: Request, call_next):
+    # Skip measuring the /metrics endpoint itself to avoid recursive skew
+    if request.url.path.rstrip("/") == "/metrics":
+        return await call_next(request)
+
+    start_time = time.perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    except Exception:
+        status_code = 500
+        raise
+    finally:
+        duration = time.perf_counter() - start_time
+        route = request.scope.get("route")
+        matched = route.path if route and hasattr(route, "path") else None
+        endpoint = normalize_metric_endpoint(request.url.path, matched_route=matched)
+        record_http_request(
+            method=request.method,
+            endpoint=endpoint,
+            status_code=status_code,
+            duration_seconds=duration,
+        )
 
 
 class ScanRequest(BaseModel):
@@ -378,6 +416,8 @@ def recover_stale_ocr_jobs(
         )
     )
     db.commit()
+    if rows_updated > 0:
+        record_ocr_stale_reaped(rows_updated)
     return rows_updated
 
 
@@ -445,7 +485,18 @@ def execute_ocr_background_task(
             )
         )
         task_db.commit()
-        if rows_completed == 0:
+        if rows_completed > 0:
+            duration_sec = None
+            if "now_str" in locals():
+                try:
+                    s_dt = _parse_utc_iso(now_str)
+                    if s_dt:
+                        duration_sec = max(0.0, (datetime.now(timezone.utc) - s_dt).total_seconds())
+                except Exception:
+                    duration_sec = None
+            record_ocr_job_status("completed", duration_seconds=duration_sec)
+            record_ocr_confidence(result.get("confidence", "low"))
+        else:
             logger.info("OCR job %s was transitioned out of processing before completion; skipped result write.", job_id)
     except Exception as exc:
         logger.exception("OCR background task failed for job %s: %s", job_id, exc)
@@ -463,6 +514,7 @@ def execute_ocr_background_task(
                 synchronize_session=False,
             )
             task_db.commit()
+            record_ocr_job_status("failed")
         except Exception:
             pass
     finally:
@@ -531,6 +583,7 @@ def ocr_nutrition_label(
         )
         db.add(job)
         db.commit()
+        record_ocr_job_created("async")
 
         background_tasks.add_task(
             execute_ocr_background_task,
@@ -547,7 +600,25 @@ def ocr_nutrition_label(
             "poll_url": f"/ocr/jobs/{job_id}",
         }
 
-    result = process_image_ocr(image_bytes)
+    record_ocr_job_created("sync")
+    sync_start = time.perf_counter()
+    try:
+        result = process_image_ocr(image_bytes)
+        duration_sec = time.perf_counter() - sync_start
+        status_val = (
+            "failed"
+            if isinstance(result, dict) and result.get("status") in {OCRStatus.INVALID_IMAGE, OCRStatus.EXTRACTION_FAILED}
+            else "completed"
+        )
+        record_ocr_job_status(status_val, duration_seconds=duration_sec)
+        if isinstance(result, dict):
+            conf = result.get("confidence") or result.get("nutrition_confidence")
+            if conf:
+                record_ocr_confidence(conf)
+    except Exception:
+        duration_sec = time.perf_counter() - sync_start
+        record_ocr_job_status("failed", duration_seconds=duration_sec)
+        raise
 
     # Optional Batch 5 Claim Verification integration if claims are passed
     if req.claims:
@@ -835,6 +906,13 @@ def analyze(
 
 
 # Startup lifecycle managed via FastAPI lifespan context manager
+
+
+@app.get("/metrics", tags=["tracking"])
+def metrics() -> Response:
+    """Prometheus metrics exposition endpoint."""
+    payload, content_type = get_metrics_exposition()
+    return Response(content=payload, media_type=content_type)
 
 
 @app.get("/health", tags=["tracking"])

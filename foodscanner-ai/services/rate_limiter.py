@@ -131,6 +131,11 @@ def enforce_rate_limit(
 
     allowed, retry_after = active_limiter.check_rate_limit(endpoint_key, client_key)
     if not allowed:
+        try:
+            from services.metrics import record_rate_limit_exceeded
+            record_rate_limit_exceeded(endpoint_key)
+        except Exception:
+            pass
         logger.warning(
             "Rate limit exceeded for endpoint '%s' by client '%s'. Retry after %ds.",
             endpoint_key,
