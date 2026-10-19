@@ -7,3 +7,5 @@ venv/
 .env
 database.zip
 datasets/off_india_raw.json
+*.db
+database/*.db

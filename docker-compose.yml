@@ -21,7 +21,7 @@ services:
       - AI_MODEL=gemini-1.5-flash
       - RATE_LIMIT_ENABLED=true
     volumes:
-      - ./foodscanner-ai/database/foodscanner.db:/app/database/foodscanner.db
+      - ./foodscanner-ai/database:/app/database
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
       interval: 10s
