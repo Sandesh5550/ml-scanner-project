@@ -10,6 +10,7 @@ import {
   PREMIUM_SHADOWS,
   PREMIUM_RADIUS,
 } from '../theme/premiumTheme';
+import { formatNutritionValue } from '../utils/formatters';
 
 function _ratingMeta(rating) {
   const r = String(rating || '').toUpperCase();
@@ -52,8 +53,8 @@ function PremiumReportBar({ label, consumed, limit, unit = 'g', iconName = 'leaf
       </View>
 
       <View style={styles.barFooter}>
-        <Text style={styles.barSub}>{c} {unit} consumed</Text>
-        <Text style={styles.barLimit}>of {l} {unit} target</Text>
+        <Text style={styles.barSub}>{formatNutritionValue(c)} {unit} consumed</Text>
+        <Text style={styles.barLimit}>of {formatNutritionValue(l)} {unit} target</Text>
       </View>
     </View>
   );
@@ -218,7 +219,7 @@ export default function ReportScreen() {
             <View style={styles.chartContainer}>
               <View style={styles.chartBarsRow}>
                 {days.map((d, idx) => {
-                  const score = Math.round(Number(d.score || 0));
+                  const score = Math.round(Number(d.score != null ? d.score : (d.day_score || 0)));
                   const barHeight = Math.max(16, (score / 100) * 110);
                   const isSafe = score >= 70;
                   const isModerate = score >= 45;
@@ -243,11 +244,12 @@ export default function ReportScreen() {
                         />
                       </View>
                       <Text style={styles.chartDayText}>
-                        {d.day_name ? d.day_name.slice(0, 3) : `D${idx + 1}`}
+                        {d.short_day || (d.day_name ? d.day_name.slice(0, 3) : `D${idx + 1}`)}
                       </Text>
                     </View>
                   );
                 })}
+
               </View>
             </View>
           ) : (

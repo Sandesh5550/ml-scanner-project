@@ -10,6 +10,7 @@ import {
   PREMIUM_RADIUS,
 } from '../theme/premiumTheme';
 import { NeoButton } from '../components/neo';
+import { formatNutritionValue } from '../utils/formatters';
 
 export default function OCRScanScreen({ navigation, route }) {
   const prefillName = route?.params?.productName;
@@ -18,16 +19,16 @@ export default function OCRScanScreen({ navigation, route }) {
   const goManual = (prefill) => {
     navigation.navigate('ManualEntry', {
       productName: prefill?.product_name || prefillName || '',
-      calories: prefill?.calories ?? null,
-      nutrition: {
-        calories: prefill?.calories ?? null,
-        fat: prefill?.fat ?? null,
-        sugar: prefill?.sugar ?? null,
-        salt: prefill?.salt ?? null,
-        protein: prefill?.protein ?? null,
-        fiber: prefill?.fiber ?? null,
-        carbs: prefill?.carbs ?? null,
-      },
+      calories: prefill?.calories != null ? formatNutritionValue(prefill.calories, '') : null,
+      nutrition: prefill ? {
+        calories: prefill.calories != null ? formatNutritionValue(prefill.calories, '') : null,
+        fat: prefill.fat != null ? formatNutritionValue(prefill.fat, '') : null,
+        sugar: prefill.sugar != null ? formatNutritionValue(prefill.sugar, '') : null,
+        salt: prefill.salt != null ? formatNutritionValue(prefill.salt, '') : null,
+        protein: prefill.protein != null ? formatNutritionValue(prefill.protein, '') : null,
+        fiber: prefill.fiber != null ? formatNutritionValue(prefill.fiber, '') : null,
+        carbs: prefill.carbs != null ? formatNutritionValue(prefill.carbs, '') : null,
+      } : null,
       ocr: prefill || null,
     });
   };

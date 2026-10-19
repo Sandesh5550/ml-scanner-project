@@ -10,12 +10,14 @@ import {
   ScrollView,
   Animated,
   Dimensions,
+  Platform,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 
 import { scanProduct, analyzeManualProduct } from '../services/api';
+import WebBarcodeScanner from '../components/WebBarcodeScanner';
 import {
   PREMIUM_COLORS,
   PREMIUM_SHADOWS,
@@ -183,7 +185,7 @@ export default function ScanScreen({ navigation }) {
     setTimeout(() => setScanned(false), 1500);
   };
 
-  if (!permission) {
+  if (!permission && Platform.OS !== 'web') {
     return (
       <View style={styles.center}>
         <ActivityIndicator color={PREMIUM_COLORS.primaryDark} size="small" />
@@ -230,7 +232,18 @@ export default function ScanScreen({ navigation }) {
         </View>
 
         {/* Live Camera View or Trigger Card */}
-        {showCamera && permission?.granted ? (
+        {showCamera && Platform.OS === 'web' ? (
+          <View style={[styles.cameraContainer, PREMIUM_SHADOWS.md]}>
+            <WebBarcodeScanner
+              boxSize={SCAN_BOX_SIZE}
+              onBarcodeScanned={scanned ? undefined : onBarcodeScanned}
+              onClose={() => {
+                setShowCamera(false);
+                setScanned(false);
+              }}
+            />
+          </View>
+        ) : showCamera && permission?.granted ? (
           <View style={[styles.cameraContainer, PREMIUM_SHADOWS.md]}>
             <CameraView
               style={StyleSheet.absoluteFill}
@@ -276,6 +289,11 @@ export default function ScanScreen({ navigation }) {
             style={[styles.cameraHeroCard, PREMIUM_SHADOWS.sm]}
             activeOpacity={0.9}
             onPress={async () => {
+              if (Platform.OS === 'web') {
+                setScanned(false);
+                setShowCamera(true);
+                return;
+              }
               if (permission?.granted) {
                 setScanned(false);
                 setShowCamera(true);
@@ -295,9 +313,13 @@ export default function ScanScreen({ navigation }) {
             <View style={styles.cameraHeroIconWrap}>
               <Ionicons name="barcode-outline" size={30} color={PREMIUM_COLORS.primaryDark} />
             </View>
-            <Text style={styles.cameraHeroTitle}>Open Live Barcode Scanner</Text>
+            <Text style={styles.cameraHeroTitle}>
+              {Platform.OS === 'web' ? 'Open Live Webcam Scanner' : 'Open Live Barcode Scanner'}
+            </Text>
             <Text style={styles.cameraHeroSub}>
-              Point at any packaged food label for instant scientific breakdown
+              {Platform.OS === 'web'
+                ? 'Scan food packaging barcode using your laptop webcam'
+                : 'Point at any packaged food label for instant scientific breakdown'}
             </Text>
           </TouchableOpacity>
         )}

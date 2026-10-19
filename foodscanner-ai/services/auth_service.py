@@ -13,7 +13,7 @@ from database.db_session import get_db
 from database.models import User
 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt", "argon2"], deprecated="auto")
 security = HTTPBearer(auto_error=False)
 
 load_environment()

@@ -122,6 +122,9 @@ def resolve_product_context(
             "salt": _to_float(raw_nutr.get("salt")),
         }
 
+        supplied_score = product_context.get("health_score")
+        supplied_decision = product_context.get("final_decision")
+
         # Deterministic scoring
         mock_p = {"product_name": p_name, **nutr, "ingredients": product_context.get("ingredients")}
         if diet_type:
@@ -129,8 +132,9 @@ def resolve_product_context(
         else:
             health = compute_food_health_score(mock_p)
 
-        final_dec = health.get("decision")
-        reasons = [health.get("reason")] if health.get("reason") else []
+        final_dec = supplied_decision if supplied_decision is not None else health.get("decision")
+        health_score = supplied_score if supplied_score is not None else health.get("health_score")
+        reasons = [health.get("reason")] if health.get("reason") else (product_context.get("reasons") or [])
 
         alts = []
         if final_dec != "SAFE":
@@ -145,7 +149,7 @@ def resolve_product_context(
             "nutrition": nutr,
             "ingredients": product_context.get("ingredients"),
             "additives": product_context.get("additives"),
-            "health_score": health.get("health_score"),
+            "health_score": health_score,
             "final_decision": final_dec,
             "reasons": reasons,
             "diet_note": health.get("diet_note"),
@@ -196,13 +200,23 @@ def build_user_prompt(
     product: Optional[Dict[str, Any]],
     user_profile: Dict[str, Any],
     retrieved_sources: List[Dict[str, Any]],
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
-    """Format user query with retrieved knowledge, product facts, and profile context, safely isolating user input."""
+    """Format user query with retrieved knowledge, product facts, profile context, and conversation history."""
     lines = [
         "<user_question>",
         query,
         "</user_question>\n",
     ]
+
+    if conversation_history:
+        lines.append("=== RECENT CONVERSATION HISTORY ===")
+        for turn in conversation_history[-4:]:
+            role = "User" if str(turn.get("role") or "").lower() == "user" else "Assistant"
+            text_val = str(turn.get("content") or "").strip()
+            if text_val:
+                lines.append(f"{role}: {text_val}")
+        lines.append("")
 
     if retrieved_sources:
         lines.append("=== RETRIEVED KNOWLEDGE SOURCES ===")
@@ -289,6 +303,7 @@ def ask_nutrition_assistant(
     product_context: Optional[Dict[str, Any]] = None,
     user: Any = None,
     db: Optional[Session] = None,
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Execute complete end-to-end RAG pipeline for the AI Nutrition Assistant.
 
@@ -379,7 +394,13 @@ def ask_nutrition_assistant(
 
     # 6. Build prompt with safe boundaries
     system_prompt = build_system_prompt()
-    user_prompt = build_user_prompt(clean_query, product, profile, retrieved_sources)
+    user_prompt = build_user_prompt(
+        clean_query,
+        product,
+        profile,
+        retrieved_sources,
+        conversation_history=conversation_history,
+    )
 
     # 7. Generate response using LLM provider
     provider = get_llm_provider()

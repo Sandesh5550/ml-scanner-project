@@ -18,6 +18,7 @@ class User(Base):
     height: Mapped[float | None] = mapped_column(Float, nullable=True)
     daily_calorie_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=2000)
     diet_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    allergens: Mapped[str | None] = mapped_column(String, nullable=True)
     goal_type: Mapped[str | None] = mapped_column(String, nullable=True)
     goal_target_days: Mapped[int | None] = mapped_column(Integer, nullable=True, default=30)
     goal_started_at: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Platform, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -28,6 +28,19 @@ const GOALS = [
   { key: 'reduce_sodium', label: 'Reduce Sodium' },
 ];
 
+const ALLERGEN_OPTIONS = [
+  { key: 'peanuts', label: 'Peanuts' },
+  { key: 'tree_nuts', label: 'Tree Nuts' },
+  { key: 'milk', label: 'Milk & Dairy' },
+  { key: 'eggs', label: 'Eggs' },
+  { key: 'wheat_gluten', label: 'Wheat & Gluten' },
+  { key: 'soy', label: 'Soy / Soya' },
+  { key: 'fish', label: 'Fish' },
+  { key: 'shellfish', label: 'Shellfish' },
+  { key: 'sesame', label: 'Sesame' },
+  { key: 'mustard', label: 'Mustard' },
+];
+
 export default function ProfileScreen({ navigation }) {
   const { logout, isLoggingOut } = useAuth();
   const [profile, setProfile] = useState(null);
@@ -35,6 +48,10 @@ export default function ProfileScreen({ navigation }) {
   const [goal, setGoal] = useState(null);
   const [goalDays, setGoalDays] = useState('30');
   const [dailyLimit, setDailyLimit] = useState('2000');
+  const [age, setAge] = useState('');
+  const [weight, setWeight] = useState('');
+  const [height, setHeight] = useState('');
+  const [selectedAllergens, setSelectedAllergens] = useState([]);
   const [saving, setSaving] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
 
@@ -46,6 +63,18 @@ export default function ProfileScreen({ navigation }) {
       setGoal(p?.goal_type ?? null);
       setGoalDays(String(p?.goal_target_days ?? 30));
       setDailyLimit(String(p?.daily_calorie_limit ?? 2000));
+      setAge(p?.age != null ? String(p.age) : '');
+      setWeight(p?.weight != null ? String(p.weight) : '');
+      setHeight(p?.height != null ? String(p.height) : '');
+      if (p?.allergens) {
+        const arr = String(p.allergens)
+          .split(',')
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean);
+        setSelectedAllergens(arr);
+      } else {
+        setSelectedAllergens([]);
+      }
     } catch (e) {
       // ignore
     }
@@ -57,6 +86,48 @@ export default function ProfileScreen({ navigation }) {
     }, [fetchProfile])
   );
 
+  const toggleAllergen = (key) => {
+    setSelectedAllergens((prev) => {
+      if (prev.includes(key)) {
+        return prev.filter((k) => k !== key);
+      } else {
+        return [...prev, key];
+      }
+    });
+  };
+
+  const calorieEstimate = useMemo(() => {
+    const a = parseFloat(age);
+    const w = parseFloat(weight);
+    const h = parseFloat(height);
+    if (!a || !w || !h || a <= 0 || w <= 0 || h <= 0 || a > 120 || w > 400 || h > 300) {
+      return null;
+    }
+    const bmr = 10.0 * w + 6.25 * h - 5.0 * a - 78.0;
+    const tdee = bmr * 1.35;
+    let recommended = tdee;
+    let goalNote = 'Maintenance caloric target';
+
+    if (goal === 'lose_weight') {
+      recommended = Math.max(1200, tdee - 450);
+      goalNote = 'Caloric deficit (-450 kcal) targeted for fat loss';
+    } else if (goal === 'build_muscle') {
+      recommended = tdee + 250;
+      goalNote = 'Caloric surplus (+250 kcal) for muscle protein synthesis';
+    } else if (goal === 'control_sugar') {
+      goalNote = 'Maintenance calories with glycemic control focus';
+    } else if (goal === 'reduce_sodium') {
+      goalNote = 'Maintenance calories with low sodium focus';
+    }
+    const rounded = Math.round(recommended / 50) * 50;
+    return {
+      bmr: Math.round(bmr),
+      tdee: Math.round(tdee),
+      recommended: rounded,
+      goalNote,
+    };
+  }, [age, weight, height, goal]);
+
   const save = async () => {
     setSaving(true);
     try {
@@ -65,9 +136,13 @@ export default function ProfileScreen({ navigation }) {
         daily_calorie_limit: dailyLimit ? Number(dailyLimit) : null,
         goal_type: goal,
         goal_target_days: goalDays ? Number(goalDays) : null,
+        allergens: selectedAllergens.length > 0 ? selectedAllergens.join(',') : '',
+        age: age ? parseInt(age, 10) : null,
+        weight: weight ? parseFloat(weight) : null,
+        height: height ? parseFloat(height) : null,
       };
       await updateUserProfile(payload);
-      Alert.alert('Profile Saved', 'Your dietary preferences and goals have been updated.');
+      Alert.alert('Profile Saved', 'Your dietary preferences, biometric data, and allergy alerts have been updated.');
     } catch (e) {
       const msg = e?.response?.data?.detail || e?.message || 'Update failed';
       Alert.alert('Error', String(msg));
@@ -174,6 +249,51 @@ export default function ProfileScreen({ navigation }) {
           </View>
         </View>
 
+        {/* Food Allergies & Sensitivities Card */}
+        <View style={[styles.card, PREMIUM_SHADOWS.sm]}>
+          <Text style={styles.cardTitle}>Food Allergies & Sensitivities</Text>
+          <Text style={styles.cardSub}>
+            PRAMAAN automatically scans ingredients and flags critical allergen warnings.
+          </Text>
+
+          <View style={styles.chipsRow}>
+            {ALLERGEN_OPTIONS.map((a) => {
+              const active = selectedAllergens.includes(a.key);
+              return (
+                <TouchableOpacity
+                  key={a.key}
+                  activeOpacity={0.85}
+                  style={[
+                    styles.chip,
+                    styles.allergenChip,
+                    active ? styles.allergenChipActive : null,
+                  ]}
+                  onPress={() => toggleAllergen(a.key)}
+                >
+                  <Ionicons
+                    name={active ? 'warning' : 'shield-checkmark-outline'}
+                    size={13}
+                    color={active ? PREMIUM_COLORS.status.avoid : PREMIUM_COLORS.secondary}
+                    style={{ marginRight: 4 }}
+                  />
+                  <Text style={[styles.chipText, active && styles.allergenChipTextActive]}>
+                    {a.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {selectedAllergens.length > 0 ? (
+            <View style={styles.activeAllergenNotice}>
+              <Ionicons name="shield-alert-outline" size={14} color={PREMIUM_COLORS.status.avoid} />
+              <Text style={styles.activeAllergenNoticeText}>
+                Active safety alerts enabled for {selectedAllergens.length} declared allergen{selectedAllergens.length > 1 ? 's' : ''}.
+              </Text>
+            </View>
+          ) : null}
+        </View>
+
         {/* Health Goal Card */}
         <View style={[styles.card, PREMIUM_SHADOWS.sm]}>
           <Text style={styles.cardTitle}>Primary Health Goal</Text>
@@ -201,6 +321,91 @@ export default function ProfileScreen({ navigation }) {
               );
             })}
           </View>
+        </View>
+
+        {/* Biometrics & Mifflin-St Jeor Energy Estimation */}
+        <View style={[styles.card, PREMIUM_SHADOWS.sm]}>
+          <Text style={styles.cardTitle}>Biometrics & Daily Energy Estimate</Text>
+          <Text style={styles.cardSub}>
+            Mifflin-St Jeor standard energy expenditure estimation based on your profile.
+          </Text>
+
+          <View style={styles.biometricsRow}>
+            <View style={{ flex: 1 }}>
+              <NeoInput
+                label="Age (yrs)"
+                value={age}
+                onChangeText={setAge}
+                placeholder="28"
+                keyboardType="numeric"
+              />
+            </View>
+            <View style={{ flex: 1 }}>
+              <NeoInput
+                label="Weight (kg)"
+                value={weight}
+                onChangeText={setWeight}
+                placeholder="70"
+                keyboardType="numeric"
+              />
+            </View>
+            <View style={{ flex: 1 }}>
+              <NeoInput
+                label="Height (cm)"
+                value={height}
+                onChangeText={setHeight}
+                placeholder="175"
+                keyboardType="numeric"
+              />
+            </View>
+          </View>
+
+          {calorieEstimate ? (
+            <View style={styles.calculatorResultBox}>
+              <View style={styles.calcMetricsRow}>
+                <View style={styles.calcMetricItem}>
+                  <Text style={styles.calcMetricLabel}>Basal (BMR)</Text>
+                  <Text style={styles.calcMetricValue}>{calorieEstimate.bmr}</Text>
+                  <Text style={styles.calcMetricUnit}>kcal/day</Text>
+                </View>
+                <View style={styles.calcDivider} />
+                <View style={styles.calcMetricItem}>
+                  <Text style={styles.calcMetricLabel}>Maintenance (TDEE)</Text>
+                  <Text style={styles.calcMetricValue}>{calorieEstimate.tdee}</Text>
+                  <Text style={styles.calcMetricUnit}>kcal/day</Text>
+                </View>
+                <View style={styles.calcDivider} />
+                <View style={styles.calcMetricItem}>
+                  <Text style={styles.calcMetricLabel}>Target Budget</Text>
+                  <Text style={[styles.calcMetricValue, { color: PREMIUM_COLORS.primaryDark }]}>
+                    {calorieEstimate.recommended}
+                  </Text>
+                  <Text style={styles.calcMetricUnit}>kcal/day</Text>
+                </View>
+              </View>
+
+              <Text style={styles.goalNoteText}>{calorieEstimate.goalNote}</Text>
+
+              <TouchableOpacity
+                style={styles.applyCalcBtn}
+                onPress={() => setDailyLimit(String(calorieEstimate.recommended))}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="checkmark-circle-outline" size={15} color={PREMIUM_COLORS.primaryDark} />
+                <Text style={styles.applyCalcBtnText}>
+                  Apply {calorieEstimate.recommended} kcal to Daily Budget
+                </Text>
+              </TouchableOpacity>
+
+              <Text style={styles.disclaimerText}>
+                Informational guideline based on Mifflin-St Jeor formula (moderate activity). Does not constitute medical advice.
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.biometricHint}>
+              Enter age, weight, and height to view personalized Mifflin-St Jeor energy calculations.
+            </Text>
+          )}
         </View>
 
         {/* Targets & Budgets */}
@@ -391,6 +596,120 @@ const styles = StyleSheet.create({
   chipTextActive: {
     color: PREMIUM_COLORS.primaryDark,
     fontWeight: '700',
+  },
+  allergenChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  allergenChipActive: {
+    backgroundColor: PREMIUM_COLORS.status.avoidBg,
+    borderColor: PREMIUM_COLORS.status.avoidBorder,
+  },
+  allergenChipTextActive: {
+    color: PREMIUM_COLORS.status.avoid,
+    fontWeight: '700',
+  },
+  activeAllergenNotice: {
+    marginTop: 12,
+    padding: 10,
+    borderRadius: PREMIUM_RADIUS.lg,
+    backgroundColor: PREMIUM_COLORS.status.avoidBg,
+    borderWidth: 1,
+    borderColor: PREMIUM_COLORS.status.avoidBorder,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  activeAllergenNoticeText: {
+    fontSize: 12,
+    color: PREMIUM_COLORS.status.avoid,
+    fontWeight: '600',
+    flex: 1,
+  },
+
+  // Biometrics & Calculator
+  biometricsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 8,
+  },
+  calculatorResultBox: {
+    backgroundColor: PREMIUM_COLORS.bgAlt,
+    borderRadius: PREMIUM_RADIUS.lg,
+    padding: 14,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: PREMIUM_COLORS.border,
+  },
+  calcMetricsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  calcMetricItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  calcMetricLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: PREMIUM_COLORS.secondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  calcMetricValue: {
+    fontSize: 19,
+    fontWeight: '800',
+    color: PREMIUM_COLORS.ink,
+    marginTop: 2,
+  },
+  calcMetricUnit: {
+    fontSize: 10,
+    color: PREMIUM_COLORS.muted,
+  },
+  calcDivider: {
+    width: 1,
+    height: 30,
+    backgroundColor: PREMIUM_COLORS.border,
+  },
+  goalNoteText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: PREMIUM_COLORS.ink,
+    marginTop: 10,
+    textAlign: 'center',
+  },
+  applyCalcBtn: {
+    marginTop: 10,
+    backgroundColor: PREMIUM_COLORS.primaryLight,
+    borderWidth: 1,
+    borderColor: PREMIUM_COLORS.status.safeBorder,
+    borderRadius: PREMIUM_RADIUS.pill,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  applyCalcBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: PREMIUM_COLORS.primaryDark,
+  },
+  disclaimerText: {
+    fontSize: 10,
+    color: PREMIUM_COLORS.muted,
+    marginTop: 8,
+    textAlign: 'center',
+    fontStyle: 'italic',
+    lineHeight: 14,
+  },
+  biometricHint: {
+    fontSize: 12,
+    color: PREMIUM_COLORS.muted,
+    fontStyle: 'italic',
+    marginTop: 4,
   },
 
   // Actions

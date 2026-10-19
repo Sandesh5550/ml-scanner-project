@@ -55,8 +55,9 @@ def is_score_calculation_or_override_request(query: str) -> bool:
         return False
 
     patterns = [
-        r"\b(calculate|compute|generate|give|assign)\s+(the\s+)?(health\s+score|score)\s+(yourself|independently|without\s+backend|on\s+your\s+own)",
-        r"\b(override|change|modify|fake)\s+(the\s+)?(health\s+score|score)\s+to\s+\d+",
+        r"\b(calculate|compute|generate|give|assign|recalculate)\s+(the\s+)?(health\s+score|score)\s+(yourself|independently|without\s+backend|on\s+your\s+own)",
+        r"\b(override|change|modify|fake|set|make)\s+(the\s+)?(health\s+score|score).*\bto\s+\d+",
+        r"\b(recalculate|re-calculate)\s+(and\s+change\s+)?(the\s+)?(health\s+score|score)",
         r"\b(can\s+you\s+calculate\s+the\s+health\s+score\s+yourself)",
         r"\b(calculate\s+the\s+score\s+yourself)",
         r"\b(recalculate\s+the\s+score\s+without\s+the\s+backend)",

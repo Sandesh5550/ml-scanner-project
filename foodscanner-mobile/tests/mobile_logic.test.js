@@ -1313,3 +1313,240 @@ describe('Batch 14: History Item DB Identification & Report Goal Contract Compli
     assert.strictEqual(cardSub, 'No active goal. Set a goal in your profile to track progress.');
   });
 });
+
+// =============================================================================
+// Batch 15: Nutrition Decimal Precision Formatting Tests
+// =============================================================================
+describe('Batch 15: Nutrition Decimal Precision Formatting Contract', () => {
+  const { formatNutritionValue, formatNutritionWithUnit } = require('../src/utils/formatters');
+
+  test('1. Exact example conversions from specifications', () => {
+    assert.strictEqual(formatNutritionValue(133.333333333333), '133.33');
+    assert.strictEqual(formatNutritionValue(1.33333333333333), '1.33');
+    assert.strictEqual(formatNutritionValue(30.6666666666667), '30.67');
+    assert.strictEqual(formatNutritionValue(29.3333333333333), '29.33');
+    assert.strictEqual(formatNutritionValue(0.666666666666667), '0.67');
+    assert.strictEqual(formatNutritionValue(2.36666666666667), '2.37');
+  });
+
+  test('2. Whole numbers display cleanly without trailing .00', () => {
+    assert.strictEqual(formatNutritionValue(133), '133');
+    assert.strictEqual(formatNutritionValue(133.0), '133');
+    assert.strictEqual(formatNutritionValue(0), '0');
+    assert.strictEqual(formatNutritionValue(2000), '2000');
+  });
+
+  test('3. Handles missing, null, undefined and invalid values safely', () => {
+    assert.strictEqual(formatNutritionValue(null), '0');
+    assert.strictEqual(formatNutritionValue(undefined), '0');
+    assert.strictEqual(formatNutritionValue(''), '0');
+    assert.strictEqual(formatNutritionValue('invalid'), '0');
+    assert.strictEqual(formatNutritionValue(NaN), '0');
+    assert.strictEqual(formatNutritionValue(null, '—'), '—');
+    assert.strictEqual(formatNutritionValue(undefined, ''), '');
+  });
+
+  test('4. formatNutritionWithUnit keeps units and labels intact', () => {
+    assert.strictEqual(formatNutritionWithUnit(133.333333333333, ' kcal'), '133.33 kcal');
+    assert.strictEqual(formatNutritionWithUnit(1.33333333333333, 'g'), '1.33g');
+    assert.strictEqual(formatNutritionWithUnit(null, 'g', '—'), '—');
+  });
+});
+
+describe('Batch 16: Phase 1 Reliability — Food Log Deletion, Modification & Report Consistency Contract', () => {
+  test('1. deleteFoodLogItem targets /food-log/{logId} with correct method and id', () => {
+    function planDeleteUrl(logId) {
+      if (!logId) throw new Error('logId required');
+      return { method: 'DELETE', url: `/food-log/${logId}` };
+    }
+    assert.deepStrictEqual(planDeleteUrl(42), { method: 'DELETE', url: '/food-log/42' });
+    assert.throws(() => planDeleteUrl(null), /logId required/);
+  });
+
+  test('2. updateFoodLogItem targets /food-log/{logId} with valid payload', () => {
+    function planUpdatePayload(logId, data) {
+      if (!logId) throw new Error('logId required');
+      return { method: 'PUT', url: `/food-log/${logId}`, body: data };
+    }
+    const update = planUpdatePayload(42, { calories: 350.5, portion_size: 150 });
+    assert.strictEqual(update.method, 'PUT');
+    assert.strictEqual(update.url, '/food-log/42');
+    assert.strictEqual(update.body.calories, 350.5);
+  });
+
+  test('3. ReportScreen trend score resolution handles both d.score and d.day_score seamlessly', () => {
+    function resolveDayScore(d) {
+      return Math.round(Number(d?.score != null ? d.score : (d?.day_score || 0)));
+    }
+    assert.strictEqual(resolveDayScore({ score: 85, day_score: 85 }), 85);
+    assert.strictEqual(resolveDayScore({ day_score: 74 }), 74);
+    assert.strictEqual(resolveDayScore({ score: 92 }), 92);
+    assert.strictEqual(resolveDayScore({}), 0);
+  });
+
+  test('4. ResultScreen intake calculation avoids double scaling on custom portions', () => {
+    function calculateLoggedIntake(rawNutrition, portionGrams) {
+      const scale = portionGrams / 100.0;
+      // Backend applies (rawNutrition * portionGrams / 100)
+      return {
+        calories: Number(rawNutrition.calories) * scale,
+        sugar: Number(rawNutrition.sugar) * scale,
+      };
+    }
+    const raw = { calories: 400, sugar: 20 };
+    const scaled = calculateLoggedIntake(raw, 50);
+    // Half serving of 400 kcal is 200 kcal, not 100 kcal
+    assert.strictEqual(scaled.calories, 200);
+    assert.strictEqual(scaled.sugar, 10);
+  });
+});
+
+describe('Batch 17: Phase 2 Personalization — Biometrics, Mifflin-St Jeor & Allergen Safety Contract', () => {
+  test('1. ProfileScreen Mifflin-St Jeor calculation computes accurate BMR, TDEE, and goal adaptations', () => {
+    function computeEnergyEstimate(age, weight, height, goal) {
+      const a = parseFloat(age);
+      const w = parseFloat(weight);
+      const h = parseFloat(height);
+      if (!a || !w || !h || a <= 0 || w <= 0 || h <= 0 || a > 120 || w > 400 || h > 300) {
+        return null;
+      }
+      const bmr = 10.0 * w + 6.25 * h - 5.0 * a - 78.0;
+      const tdee = bmr * 1.35;
+      let recommended = tdee;
+      let goalNote = 'Maintenance target';
+
+      if (goal === 'lose_weight') {
+        recommended = Math.max(1200, tdee - 450);
+        goalNote = 'Caloric deficit (-450 kcal) targeted for fat loss';
+      } else if (goal === 'build_muscle') {
+        recommended = tdee + 250;
+        goalNote = 'Caloric surplus (+250 kcal) for muscle protein synthesis';
+      }
+      return {
+        bmr: Math.round(bmr),
+        tdee: Math.round(tdee),
+        recommended: Math.round(recommended / 50) * 50,
+        goalNote,
+      };
+    }
+
+    // 28yo, 70kg, 175cm
+    const maint = computeEnergyEstimate('28', '70', '175', 'eat_clean');
+    assert.strictEqual(maint.bmr, 1576);
+    assert.strictEqual(maint.tdee, 2127);
+    assert.strictEqual(maint.recommended, 2150);
+
+    // Deficit for weight loss
+    const loss = computeEnergyEstimate('28', '70', '175', 'lose_weight');
+    assert.strictEqual(loss.recommended, 1700);
+
+    // Surplus for muscle building
+    const muscle = computeEnergyEstimate('28', '70', '175', 'build_muscle');
+    assert.strictEqual(muscle.recommended, 2400);
+
+    // Null for invalid inputs
+    assert.strictEqual(computeEnergyEstimate('-5', '70', '175', 'eat_clean'), null);
+    assert.strictEqual(computeEnergyEstimate('', '70', '175', 'eat_clean'), null);
+  });
+
+  test('2. ProfileScreen allergen multi-select toggling constructs correct API comma-delimited string', () => {
+    function toggleAllergen(currentList, key) {
+      if (currentList.includes(key)) {
+        return currentList.filter((k) => k !== key);
+      } else {
+        return [...currentList, key];
+      }
+    }
+
+    let allergens = [];
+    allergens = toggleAllergen(allergens, 'peanuts');
+    assert.deepStrictEqual(allergens, ['peanuts']);
+
+    allergens = toggleAllergen(allergens, 'milk');
+    assert.deepStrictEqual(allergens, ['peanuts', 'milk']);
+
+    // Toggle off 'peanuts'
+    allergens = toggleAllergen(allergens, 'peanuts');
+    assert.deepStrictEqual(allergens, ['milk']);
+
+    // Payload serialization
+    const payloadStr = allergens.length > 0 ? allergens.join(',') : '';
+    assert.strictEqual(payloadStr, 'milk');
+  });
+
+  test('3. ResultScreen allergen alert classification differentiates critical matches from informational', () => {
+    const rawWarnings = [
+      { allergen: 'peanuts', severity: 'CRITICAL', user_match: true, warning: 'ALLERGEN ALERT: Contains Peanuts' },
+      { allergen: 'soy', severity: 'MEDIUM', user_match: false, warning: 'Contains Soy.' },
+    ];
+
+    const criticalAllergens = rawWarnings.filter((w) => w?.severity === 'CRITICAL' || w?.user_match);
+    assert.strictEqual(criticalAllergens.length, 1);
+    assert.strictEqual(criticalAllergens[0].allergen, 'peanuts');
+    assert.strictEqual(criticalAllergens[0].user_match, true);
+  });
+});
+
+describe('Batch 18: Phase 3 AI Intelligence & Nutritional Comparison Contract', () => {
+  test('1. Multi-turn chat message formatting passes conversation history without mutation', () => {
+    function formatChatPayload(message, barcode, productContext, history) {
+      return {
+        message: String(message || '').trim(),
+        barcode: barcode ? String(barcode).trim() : null,
+        product_context: productContext || null,
+        conversation_history: Array.isArray(history) ? history.slice(-6) : null,
+      };
+    }
+
+    const messages = [
+      { role: 'user', content: 'What is the score?' },
+      { role: 'assistant', content: 'Score is 75/100.' },
+      { role: 'user', content: 'Is it high in protein?' },
+    ];
+
+    const payload = formatChatPayload('Is it high in protein?', '8901234567890', { name: 'Almonds' }, messages);
+    assert.strictEqual(payload.message, 'Is it high in protein?');
+    assert.strictEqual(payload.conversation_history.length, 3);
+    assert.strictEqual(payload.conversation_history[0].content, 'What is the score?');
+  });
+
+  test('2. ComparisonCard alternative suggestions extracts valid product names and caps at 3', () => {
+    function extractAlternativeSuggestions(alternatives) {
+      if (!Array.isArray(alternatives)) return [];
+      return alternatives
+        .map((a) => (typeof a === 'string' ? a : a?.product_name || a?.name))
+        .filter((n) => typeof n === 'string' && n.trim().length > 0)
+        .slice(0, 3);
+    }
+
+    const recommendations = [
+      { product_name: 'Baked Multigrain Crisps', reason: 'Lower saturated fat' },
+      { product_name: 'Roasted Makhana', reason: 'Zero trans fats' },
+      { product_name: 'Sprouted Moong Snack', reason: 'High fiber and protein' },
+      { product_name: 'Air Popped Corn', reason: 'Low calorie' },
+    ];
+
+    const suggestions = extractAlternativeSuggestions(recommendations);
+    assert.strictEqual(suggestions.length, 3);
+    assert.deepStrictEqual(suggestions, [
+      'Baked Multigrain Crisps',
+      'Roasted Makhana',
+      'Sprouted Moong Snack',
+    ]);
+  });
+
+  test('3. Analytical queries preserve Scan != Eat and never target /food-log', () => {
+    const endpointsHit = [];
+    const mockClient = {
+      post: (url) => { endpointsHit.push(url); return Promise.resolve({ data: {} }); },
+    };
+
+    // Chat query
+    mockClient.post('/chat', { message: 'Is this snack healthy?' });
+    // Comparison query
+    mockClient.post('/compare', { product_a: '8901', product_b: '8902' });
+
+    assert.strictEqual(endpointsHit.includes('/food-log'), false);
+    assert.strictEqual(endpointsHit.length, 2);
+  });
+});

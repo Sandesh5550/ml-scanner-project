@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS users (
     height REAL,
     daily_calorie_limit INTEGER NOT NULL DEFAULT 2000,
     diet_type TEXT,
+    allergens TEXT,
     goal_type TEXT,
     goal_target_days INTEGER DEFAULT 30,
     goal_started_at TEXT,

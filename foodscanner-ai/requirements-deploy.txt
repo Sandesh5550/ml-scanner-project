@@ -5,12 +5,15 @@ psycopg2-binary
 python-jose[cryptography]
 python-dotenv
 passlib[argon2]
+bcrypt<4.0.0
 sqlalchemy
 rapidfuzz
 requests
+httpx
 scikit-learn
 tqdm
 uvicorn
 pytesseract
 pillow
 email-validator
+alembic

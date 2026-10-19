@@ -53,6 +53,9 @@ def run_migrations(engine: Engine) -> None:
                     conn.execute(text("ALTER TABLE users ADD COLUMN goal_target_days INTEGER DEFAULT 30"))
                 if "goal_started_at" not in cols:
                     conn.execute(text("ALTER TABLE users ADD COLUMN goal_started_at VARCHAR(100)"))
+                if "allergens" not in cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN allergens VARCHAR(255)"))
+
 
             # Products table migrations
             if "products" in table_names:

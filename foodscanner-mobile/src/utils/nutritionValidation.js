@@ -98,3 +98,5 @@ export function validateManualNutritionForm(fields = {}) {
     values: isValid ? values : null,
   };
 }
+
+export { formatNutritionValue, formatNutritionWithUnit } from './formatters';

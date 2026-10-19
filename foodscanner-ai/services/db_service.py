@@ -312,6 +312,7 @@ def get_user_profile(db: Session, user_id: int) -> dict[str, Any] | None:
         "height": getattr(user, "height", None),
         "daily_calorie_limit": user.daily_calorie_limit,
         "diet_type": user.diet_type,
+        "allergens": getattr(user, "allergens", None),
         "goal_type": user.goal_type,
         "goal_target_days": user.goal_target_days,
         "goal_started_at": user.goal_started_at,
@@ -325,6 +326,7 @@ def update_user_profile(
     name: str | None = None,
     daily_calorie_limit: int | None = None,
     diet_type: str | None = None,
+    allergens: str | None = None,
     age: int | None = None,
     weight: float | None = None,
     height: float | None = None,
@@ -341,6 +343,8 @@ def update_user_profile(
         user.daily_calorie_limit = int(daily_calorie_limit)
     if diet_type is not None:
         user.diet_type = diet_type
+    if allergens is not None:
+        user.allergens = allergens
     if age is not None:
         user.age = int(age)
     if weight is not None:
@@ -365,10 +369,12 @@ def update_user_profile(
         "height": getattr(user, "height", None),
         "daily_calorie_limit": user.daily_calorie_limit,
         "diet_type": user.diet_type,
+        "allergens": getattr(user, "allergens", None),
         "goal_type": user.goal_type,
         "goal_target_days": user.goal_target_days,
         "goal_started_at": user.goal_started_at,
     }
+
 
 
 def get_scan_counts(db: Session, user_id: int) -> dict[str, int]:
@@ -502,12 +508,12 @@ def get_today_food_logs(db: Session, user_id: int) -> list[dict]:
             "barcode": row.barcode,
             "product_name": row.product_name,
             "calories": row.calories,
-            "fat": row.nutrition_fat if row.nutrition_fat is not None else row.food_log_fat,
-            "sugar": row.nutrition_sugar if row.nutrition_sugar is not None else row.food_log_sugar,
-            "salt": row.nutrition_salt if row.nutrition_salt is not None else row.food_log_salt,
-            "protein": row.nutrition_protein if row.nutrition_protein is not None else row.food_log_protein,
-            "fiber": row.nutrition_fiber if row.nutrition_fiber is not None else row.food_log_fiber,
-            "carbs": row.nutrition_carbs if row.nutrition_carbs is not None else row.food_log_carbs,
+            "fat": row.food_log_fat if row.food_log_fat is not None else row.nutrition_fat,
+            "sugar": row.food_log_sugar if row.food_log_sugar is not None else row.nutrition_sugar,
+            "salt": row.food_log_salt if row.food_log_salt is not None else row.nutrition_salt,
+            "protein": row.food_log_protein if row.food_log_protein is not None else row.nutrition_protein,
+            "fiber": row.food_log_fiber if row.food_log_fiber is not None else row.nutrition_fiber,
+            "carbs": row.food_log_carbs if row.food_log_carbs is not None else row.nutrition_carbs,
             "consumed_at": row.consumed_at,
             "ingredients": row.ingredients,
             "additives": row.additives,
@@ -563,15 +569,41 @@ def get_week_food_logs(db: Session, user_id: int) -> dict[str, list[dict]]:
                 "barcode": row.barcode,
                 "product_name": row.product_name,
                 "calories": row.calories,
-                "fat": row.nutrition_fat if row.nutrition_fat is not None else row.food_log_fat,
-                "sugar": row.nutrition_sugar if row.nutrition_sugar is not None else row.food_log_sugar,
-                "salt": row.nutrition_salt if row.nutrition_salt is not None else row.food_log_salt,
-                "protein": row.nutrition_protein if row.nutrition_protein is not None else row.food_log_protein,
-                "fiber": row.nutrition_fiber if row.nutrition_fiber is not None else row.food_log_fiber,
-                "carbs": row.nutrition_carbs if row.nutrition_carbs is not None else row.food_log_carbs,
+                "fat": row.food_log_fat if row.food_log_fat is not None else row.nutrition_fat,
+                "sugar": row.food_log_sugar if row.food_log_sugar is not None else row.nutrition_sugar,
+                "salt": row.food_log_salt if row.food_log_salt is not None else row.nutrition_salt,
+                "protein": row.food_log_protein if row.food_log_protein is not None else row.nutrition_protein,
+                "fiber": row.food_log_fiber if row.food_log_fiber is not None else row.nutrition_fiber,
+                "carbs": row.food_log_carbs if row.food_log_carbs is not None else row.nutrition_carbs,
                 "consumed_at": row.consumed_at,
                 "ingredients": row.ingredients,
                 "additives": row.additives,
             }
         )
     return grouped
+
+
+def delete_food_log(db: Session, log_id: int, user_id: int) -> bool:
+    """Securely delete a food log entry scoped to the owner user_id."""
+    log = db.query(FoodLog).filter(FoodLog.id == int(log_id), FoodLog.user_id == int(user_id)).first()
+    if log is None:
+        return False
+    db.delete(log)
+    db.commit()
+    return True
+
+
+def update_food_log(db: Session, log_id: int, user_id: int, updates: dict[str, Any]) -> Optional[FoodLog]:
+    """Securely update a food log entry scoped to the owner user_id."""
+    log = db.query(FoodLog).filter(FoodLog.id == int(log_id), FoodLog.user_id == int(user_id)).first()
+    if log is None:
+        return None
+
+    allowed_fields = {"product_name", "calories", "fat", "sugar", "salt", "protein", "fiber", "carbs"}
+    for field, val in updates.items():
+        if field in allowed_fields and val is not None:
+            setattr(log, field, val)
+
+    db.commit()
+    db.refresh(log)
+    return log

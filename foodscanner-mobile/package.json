@@ -20,6 +20,8 @@
     "@react-navigation/elements": "^2.6.3",
     "@react-navigation/native": "^7.1.33",
     "@react-navigation/native-stack": "^7.14.5",
+    "@zxing/browser": "^0.2.1",
+    "@zxing/library": "^0.23.0",
     "axios": "^1.13.6",
     "expo": "~54.0.33",
     "expo-camera": "~17.0.10",

@@ -23,6 +23,7 @@ import {
   PREMIUM_RADIUS,
 } from '../theme/premiumTheme';
 import { NeoTab } from '../components/neo';
+import { formatNutritionValue } from '../utils/formatters';
 
 function _decisionMeta(decision) {
   const d = String(decision || '').toUpperCase();
@@ -63,6 +64,10 @@ export default function ResultScreen({ route, navigation }) {
   const ingredientAnalysis = result?.analysis?.ingredient_analysis || result?.ingredient_analysis;
   const additiveAnalysis = result?.analysis?.additive_analysis || result?.additive_analysis;
   const dietNote = result?.diet_note;
+
+  const allergenWarnings = result?.allergen_warnings || result?.personalized_analysis?.allergen_warnings || [];
+  const detectedAllergens = result?.detected_allergens || result?.personalized_analysis?.detected_allergens || [];
+  const criticalAllergens = allergenWarnings.filter((w) => w?.severity === 'CRITICAL' || w?.user_match);
 
   const [activePortionTab, setActivePortionTab] = useState('100g');
   const [servingGrams, setServingGrams] = useState('100');
@@ -109,21 +114,23 @@ export default function ResultScreen({ route, navigation }) {
     if (logging || loggedToday) return;
     setLogging(true);
     try {
+      const baseServing = activePortionTab === '100g' ? 100 : parseFloat(servingGrams) || 100;
       await logFoodItem({
         product_name: productName,
-        calories: Number(caloriesVal) || 0,
-        fat: currentNutrition?.fat != null ? Number(currentNutrition.fat) : null,
-        sugar: currentNutrition?.sugar != null ? Number(currentNutrition.sugar) : null,
-        salt: currentNutrition?.salt != null ? Number(currentNutrition.salt) : (currentNutrition?.sodium != null ? Number(currentNutrition.sodium) : null),
-        protein: currentNutrition?.protein != null ? Number(currentNutrition.protein) : null,
-        fiber: currentNutrition?.fiber != null ? Number(currentNutrition.fiber) : null,
-        carbs: currentNutrition?.carbs != null ? Number(currentNutrition.carbs) : null,
-        serving_size: activePortionTab === '100g' ? 100 : parseFloat(servingGrams) || 100,
+        calories: rawNutrition?.calories != null ? Number(rawNutrition.calories) : Number(caloriesVal) || 0,
+        fat: rawNutrition?.fat != null ? Number(rawNutrition.fat) : null,
+        sugar: rawNutrition?.sugar != null ? Number(rawNutrition.sugar) : null,
+        salt: rawNutrition?.salt != null ? Number(rawNutrition.salt) : (rawNutrition?.sodium != null ? Number(rawNutrition.sodium) : null),
+        protein: rawNutrition?.protein != null ? Number(rawNutrition.protein) : null,
+        fiber: rawNutrition?.fiber != null ? Number(rawNutrition.fiber) : null,
+        carbs: rawNutrition?.carbs != null ? Number(rawNutrition.carbs) : null,
+        serving_size: baseServing,
         barcode: barcode && String(barcode) !== '00000000' ? String(barcode) : null,
         nutrition: currentNutrition,
       });
       setLoggedToday(true);
-      Alert.alert('Logged to Daily Diary', `${productName} (${caloriesVal} kcal) has been recorded in your daily intake diary.`);
+      Alert.alert('Logged to Daily Diary', `${productName} (${formatNutritionValue(currentNutrition?.calories ?? caloriesVal)} kcal) has been recorded in your daily intake diary.`);
+
     } catch (e) {
       const msg = getNetworkErrorMessage(e);
       Alert.alert('Diary Error', String(msg));
@@ -200,6 +207,26 @@ export default function ResultScreen({ route, navigation }) {
           ) : null}
         </View>
 
+        {/* Critical Allergen Safety Alert Banner */}
+        {criticalAllergens.length > 0 ? (
+          <View style={[styles.allergenAlertBanner, PREMIUM_SHADOWS.sm]}>
+            <View style={styles.allergenAlertTop}>
+              <Ionicons name="warning" size={18} color={PREMIUM_COLORS.status.avoid} />
+              <Text style={styles.allergenAlertTitle}>CRITICAL ALLERGEN WARNING</Text>
+            </View>
+            <Text style={styles.allergenAlertBody}>
+              {criticalAllergens.map((c) => c.warning || `Contains ${c.display_name || c.allergen}`).join('\n')}
+            </Text>
+          </View>
+        ) : detectedAllergens.length > 0 ? (
+          <View style={styles.allergenInfoBanner}>
+            <Ionicons name="information-circle-outline" size={15} color={PREMIUM_COLORS.secondary} />
+            <Text style={styles.allergenInfoText}>
+              Allergens detected: {detectedAllergens.map((a) => a.replace('_', ' ')).join(', ')}
+            </Text>
+          </View>
+        ) : null}
+
         {/* Health Score Visualization Card */}
         <View style={[styles.scoreCard, PREMIUM_SHADOWS.sm]}>
           <ScoreRing
@@ -257,7 +284,7 @@ export default function ResultScreen({ route, navigation }) {
               <Ionicons name="flame-outline" size={14} color="#EA580C" />
               <Text style={styles.nutrientName}>Calories</Text>
             </View>
-            <Text style={styles.nutrientValue}>{caloriesVal}</Text>
+            <Text style={styles.nutrientValue}>{formatNutritionValue(caloriesVal)}</Text>
             <Text style={styles.nutrientUnit}>kcal</Text>
             <View style={styles.nutrientTrack}>
               <View
@@ -277,7 +304,7 @@ export default function ResultScreen({ route, navigation }) {
               <Ionicons name="leaf-outline" size={14} color={PREMIUM_COLORS.primaryDark} />
               <Text style={styles.nutrientName}>Protein</Text>
             </View>
-            <Text style={styles.nutrientValue}>{proteinVal}g</Text>
+            <Text style={styles.nutrientValue}>{formatNutritionValue(proteinVal)}g</Text>
             <Text style={styles.nutrientUnit}>target 10g+</Text>
             <View style={styles.nutrientTrack}>
               <View
@@ -297,7 +324,7 @@ export default function ResultScreen({ route, navigation }) {
               <Ionicons name="nutrition-outline" size={14} color="#D97706" />
               <Text style={styles.nutrientName}>Carbs</Text>
             </View>
-            <Text style={styles.nutrientValue}>{carbsVal}g</Text>
+            <Text style={styles.nutrientValue}>{formatNutritionValue(carbsVal)}g</Text>
             <Text style={styles.nutrientUnit}>energy</Text>
             <View style={styles.nutrientTrack}>
               <View
@@ -317,7 +344,7 @@ export default function ResultScreen({ route, navigation }) {
               <Ionicons name="water-outline" size={14} color="#0D9488" />
               <Text style={styles.nutrientName}>Sugar</Text>
             </View>
-            <Text style={styles.nutrientValue}>{sugarVal}g</Text>
+            <Text style={styles.nutrientValue}>{formatNutritionValue(sugarVal)}g</Text>
             <Text style={styles.nutrientUnit}>max 5g recommended</Text>
             <View style={styles.nutrientTrack}>
               <View
@@ -337,7 +364,7 @@ export default function ResultScreen({ route, navigation }) {
               <Ionicons name="ellipse-outline" size={14} color="#B45309" />
               <Text style={styles.nutrientName}>Fat</Text>
             </View>
-            <Text style={styles.nutrientValue}>{fatVal}g</Text>
+            <Text style={styles.nutrientValue}>{formatNutritionValue(fatVal)}g</Text>
             <Text style={styles.nutrientUnit}>total fat</Text>
             <View style={styles.nutrientTrack}>
               <View
@@ -357,7 +384,7 @@ export default function ResultScreen({ route, navigation }) {
               <Ionicons name="cube-outline" size={14} color="#4B5563" />
               <Text style={styles.nutrientName}>Salt / Sodium</Text>
             </View>
-            <Text style={styles.nutrientValue}>{saltVal}g</Text>
+            <Text style={styles.nutrientValue}>{formatNutritionValue(saltVal)}g</Text>
             <Text style={styles.nutrientUnit}>salt equivalent</Text>
             <View style={styles.nutrientTrack}>
               <View
@@ -481,7 +508,10 @@ export default function ResultScreen({ route, navigation }) {
         />
 
         {/* Nutritional Head-to-Head Comparison */}
-        <ComparisonCard currentProduct={result?.product || { name: productName, barcode, nutrition: rawNutrition }} />
+        <ComparisonCard
+          currentProduct={result?.product || { name: productName, barcode, nutrition: rawNutrition }}
+          alternatives={result?.recommendations}
+        />
 
         {/* Conversational AI Nutrition Assistant */}
         <AIChatSection
@@ -592,6 +622,51 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: PREMIUM_COLORS.secondary,
     marginTop: 4,
+  },
+
+  // Allergen Alert Banners
+  allergenAlertBanner: {
+    backgroundColor: PREMIUM_COLORS.status.avoidBg,
+    borderRadius: PREMIUM_RADIUS.xl,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1.5,
+    borderColor: PREMIUM_COLORS.status.avoidBorder,
+  },
+  allergenAlertTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  allergenAlertTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: PREMIUM_COLORS.status.avoid,
+    letterSpacing: 0.6,
+  },
+  allergenAlertBody: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: PREMIUM_COLORS.status.avoid,
+    lineHeight: 18,
+  },
+  allergenInfoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: PREMIUM_COLORS.bgAlt,
+    borderRadius: PREMIUM_RADIUS.md,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 14,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: PREMIUM_COLORS.border,
+  },
+  allergenInfoText: {
+    fontSize: 12,
+    color: PREMIUM_COLORS.secondary,
+    fontWeight: '500',
   },
 
   // Score Card

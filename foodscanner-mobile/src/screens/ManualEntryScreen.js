@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Alert, TouchableOpacity, Platform }
 import { Ionicons } from '@expo/vector-icons';
 
 import { analyzeManualProduct, getNetworkErrorMessage } from '../services/api';
-import { validateManualNutritionForm } from '../utils/nutritionValidation';
+import { validateManualNutritionForm, formatNutritionValue } from '../utils/nutritionValidation';
 import {
   PREMIUM_COLORS,
   PREMIUM_SHADOWS,
@@ -36,19 +36,19 @@ export default function ManualEntryScreen({ navigation, route }) {
       setProductName(String(prefillName));
     }
     if (prefillCalories != null) {
-      setCalories(String(prefillCalories));
+      setCalories(formatNutritionValue(prefillCalories, ''));
     }
     if (prefillNutrition && typeof prefillNutrition === 'object') {
-      if (prefillNutrition.calories != null) setCalories(String(prefillNutrition.calories));
-      if (prefillNutrition.protein != null) setProtein(String(prefillNutrition.protein));
-      if (prefillNutrition.carbs != null) setCarbs(String(prefillNutrition.carbs));
-      if (prefillNutrition.sugar != null) setSugar(String(prefillNutrition.sugar));
-      if (prefillNutrition.fat != null) setFat(String(prefillNutrition.fat));
-      if (prefillNutrition.saturated_fat != null) setSaturatedFat(String(prefillNutrition.saturated_fat));
-      else if (prefillNutrition.saturatedFat != null) setSaturatedFat(String(prefillNutrition.saturatedFat));
-      if (prefillNutrition.fiber != null) setFiber(String(prefillNutrition.fiber));
-      if (prefillNutrition.salt != null) setSalt(String(prefillNutrition.salt));
-      else if (prefillNutrition.sodium != null) setSalt(String(prefillNutrition.sodium));
+      if (prefillNutrition.calories != null) setCalories(formatNutritionValue(prefillNutrition.calories, ''));
+      if (prefillNutrition.protein != null) setProtein(formatNutritionValue(prefillNutrition.protein, ''));
+      if (prefillNutrition.carbs != null) setCarbs(formatNutritionValue(prefillNutrition.carbs, ''));
+      if (prefillNutrition.sugar != null) setSugar(formatNutritionValue(prefillNutrition.sugar, ''));
+      if (prefillNutrition.fat != null) setFat(formatNutritionValue(prefillNutrition.fat, ''));
+      if (prefillNutrition.saturated_fat != null) setSaturatedFat(formatNutritionValue(prefillNutrition.saturated_fat, ''));
+      else if (prefillNutrition.saturatedFat != null) setSaturatedFat(formatNutritionValue(prefillNutrition.saturatedFat, ''));
+      if (prefillNutrition.fiber != null) setFiber(formatNutritionValue(prefillNutrition.fiber, ''));
+      if (prefillNutrition.salt != null) setSalt(formatNutritionValue(prefillNutrition.salt, ''));
+      else if (prefillNutrition.sodium != null) setSalt(formatNutritionValue(prefillNutrition.sodium, ''));
     }
 
     setErrors({});

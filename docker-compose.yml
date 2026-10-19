@@ -1,0 +1,67 @@
+services:
+  # ============================================================================
+  # 1. FastAPI Backend (PRAMAAN AI Core Engine)
+  # ============================================================================
+  backend:
+    build:
+      context: ./foodscanner-ai
+      dockerfile: Dockerfile
+    image: foodscanner-ai:latest
+    container_name: pramaan-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - ENVIRONMENT=development
+      - SECRET_KEY=${SECRET_KEY:-pramaan-local-dev-secret-key-minimum-32-chars}
+      - DATABASE_URL=sqlite:////app/database/foodscanner.db
+      - FOODSCANNER_OCR_ENGINE=tesseract
+      - AI_PROVIDER=mock
+      - AI_MODEL=gemini-1.5-flash
+      - RATE_LIMIT_ENABLED=true
+    volumes:
+      - ./foodscanner-ai/database/foodscanner.db:/app/database/foodscanner.db
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - pramaan-net
+
+  # ============================================================================
+  # 2. Optional PostgreSQL Service (Activated with: docker compose --profile postgres up)
+  # ============================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: pramaan-postgres
+    profiles:
+      - postgres
+      - full
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pramaan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pramaan_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-foodscanner_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pramaan} -d ${POSTGRES_DB:-foodscanner_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pramaan-net
+
+volumes:
+  postgres_data:
+    name: pramaan_postgres_data
+
+networks:
+  pramaan-net:
+    name: pramaan-net
+    driver: bridge

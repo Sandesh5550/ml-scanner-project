@@ -21,8 +21,8 @@ _OCR_CACHE: Dict[str, Dict[str, Any]] = {}
 _OCR_CACHE_MAX = 64
 _EASYOCR_READER = None
 
-MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB maximum decoded image payload
-MAX_BASE64_CHAR_LIMIT = 8 * 1024 * 1024  # ~8 MB Base64 string limit
+MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB maximum decoded image payload
+MAX_BASE64_CHAR_LIMIT = 16 * 1024 * 1024  # ~16 MB Base64 string limit
 SUPPORTED_IMAGE_FORMATS = {"JPEG", "PNG", "GIF", "WEBP", "BMP", "TIFF"}
 
 

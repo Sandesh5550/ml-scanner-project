@@ -26,7 +26,7 @@ from services.barcode_lookup import lookup_product
 from services.product_search import search_products
 from services.recommendation_engine import get_healthier_alternatives, infer_food_category
 from services import db_service
-from services.health_report import generate_daily_report
+from services.health_report import generate_daily_report, generate_weekly_report
 from services.score_explainer import explain_score
 from services.goal_report import generate_goal_report
 from services.auth_service import create_access_token, get_current_user, hash_password, verify_password
@@ -43,7 +43,7 @@ from services.ocr_service import (
     validate_image_payload,
     MAX_BASE64_CHAR_LIMIT,
 )
-from services.personalization import get_personalized_analysis
+from services.personalization import get_personalized_analysis, calculate_personalized_calorie_estimate
 from services.ai_nutrition_assistant import ask_nutrition_assistant
 from services.config import load_environment, validate_runtime_config
 from services.rate_limiter import enforce_rate_limit
@@ -140,6 +140,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="User question or query")
     barcode: str | None = None
     product_context: dict[str, Any] | None = None
+    conversation_history: list[dict[str, Any]] | None = None
 
 
 class OCRRequest(BaseModel):
@@ -160,6 +161,17 @@ class FoodLogRequest(BaseModel):
     serving_size: float | None = None
 
 
+class FoodLogUpdateRequest(BaseModel):
+    product_name: str | None = None
+    calories: float | None = None
+    fat: float | None = None
+    sugar: float | None = None
+    salt: float | None = None
+    protein: float | None = None
+    fiber: float | None = None
+    carbs: float | None = None
+
+
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=6)
@@ -176,11 +188,13 @@ class UserProfileUpdateRequest(BaseModel):
     name: str | None = None
     daily_calorie_limit: int | None = None
     diet_type: str | None = None
+    allergens: str | None = None
     age: int | None = None
     weight: float | None = None
     height: float | None = None
     goal_type: str | None = None
     goal_target_days: int | None = None
+
 
 
 def _to_float(value: object) -> float | None:
@@ -294,7 +308,7 @@ def ocr_nutrition_label(
     if len(img_b64) > MAX_BASE64_CHAR_LIMIT:
         raise HTTPException(
             status_code=413,
-            detail="Image payload exceeds maximum allowed size of 5 MB",
+            detail="Image payload exceeds maximum allowed size of 10 MB",
         )
 
     try:
@@ -351,12 +365,12 @@ def log_food(
         scale_factor = req.serving_size / 100.0
 
     calories = float(req.calories or 0.0) * scale_factor
-    fat = (float(req.fat) * scale_factor) if req.fat else None
-    sugar = (float(req.sugar) * scale_factor) if req.sugar else None
-    salt = (float(req.salt) * scale_factor) if req.salt else None
-    protein = (float(req.protein) * scale_factor) if req.protein else None
-    fiber = (float(req.fiber) * scale_factor) if req.fiber else None
-    carbs = (float(req.carbs) * scale_factor) if req.carbs else None
+    fat = float(req.fat) * scale_factor if req.fat is not None else None
+    sugar = float(req.sugar) * scale_factor if req.sugar is not None else None
+    salt = float(req.salt) * scale_factor if req.salt is not None else None
+    protein = float(req.protein) * scale_factor if req.protein is not None else None
+    fiber = float(req.fiber) * scale_factor if req.fiber is not None else None
+    carbs = float(req.carbs) * scale_factor if req.carbs is not None else None
 
     db_service.log_food_consumption(
         db,
@@ -373,6 +387,47 @@ def log_food(
     )
     db.commit()
     return {"status": "logged"}
+
+
+@app.delete("/food-log/{log_id}", tags=["tracking"])
+def delete_food_log_endpoint(
+    log_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    success = db_service.delete_food_log(db, log_id=int(log_id), user_id=int(current_user.id))
+    if not success:
+        raise HTTPException(status_code=404, detail="Food log entry not found or unauthorized")
+    return {"deleted": True, "log_id": log_id}
+
+
+@app.put("/food-log/{log_id}", tags=["tracking"])
+def update_food_log_endpoint(
+    log_id: int,
+    req: FoodLogUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    updates = req.model_dump(exclude_unset=True) if hasattr(req, "model_dump") else req.dict(exclude_unset=True)
+    updated = db_service.update_food_log(db, log_id=int(log_id), user_id=int(current_user.id), updates=updates)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Food log entry not found or unauthorized")
+    return {
+        "status": "updated",
+        "food_log": {
+            "id": updated.id,
+            "product_name": updated.product_name,
+            "calories": updated.calories,
+            "fat": updated.fat,
+            "sugar": updated.sugar,
+            "salt": updated.salt,
+            "protein": updated.protein,
+            "fiber": updated.fiber,
+            "carbs": updated.carbs,
+            "consumed_at": updated.consumed_at,
+        },
+    }
+
 
 
 @app.post("/analyze", tags=["tracking"])
@@ -672,21 +727,40 @@ def today(
 
     start, end = db_service._local_day_bounds()
     today_foods = db.execute(
-        select(FoodLog.product_name, FoodLog.calories, FoodLog.consumed_at).where(
+        select(
+            FoodLog.id,
+            FoodLog.product_name,
+            FoodLog.calories,
+            FoodLog.consumed_at,
+            FoodLog.fat,
+            FoodLog.sugar,
+            FoodLog.salt,
+            FoodLog.protein,
+        ).where(
             FoodLog.user_id == int(current_user.id),
             FoodLog.consumed_at >= start,
             FoodLog.consumed_at < end,
-        )
+        ).order_by(FoodLog.consumed_at.desc())
     ).all()
 
     return {
         "calories_consumed_today": today_calories,
         "remaining_calories": remaining_calories,
         "foods": [
-            {"product_name": r[0], "calories": float(r[1]) if r[1] is not None else None, "consumed_at": r[2]}
+            {
+                "id": r[0],
+                "product_name": r[1],
+                "calories": float(r[2]) if r[2] is not None else None,
+                "consumed_at": r[3],
+                "fat": float(r[4]) if r[4] is not None else None,
+                "sugar": float(r[5]) if r[5] is not None else None,
+                "salt": float(r[6]) if r[6] is not None else None,
+                "protein": float(r[7]) if r[7] is not None else None,
+            }
             for r in today_foods
         ],
     }
+
 
 
 @app.post("/scan", tags=["tracking"])
@@ -736,8 +810,11 @@ def scan(
     scan_response = {
         "product": {
             "name": result.get("product_name"),
+            "brand": result.get("brand"),
+            "barcode": barcode,
             "nutrition": nutrition,
             "nutriscore": result.get("nutriscore"),
+            "ingredients": result.get("ingredients"),
         },
         "analysis": {
             "ingredient_analysis": result.get("ingredient_analysis"),
@@ -761,7 +838,10 @@ def scan(
         remaining_calories=result.get("remaining_calories"),
         today_calories_consumed=result.get("today_calories_consumed"),
     )
+    scan_response["allergen_warnings"] = scan_response["personalized_analysis"].get("allergen_warnings", [])
+    scan_response["detected_allergens"] = scan_response["personalized_analysis"].get("detected_allergens", [])
     scan_response["explanation"] = explain_score(result, getattr(current_user, "diet_type", None))
+
 
     if req.claims:
         scan_response["claim_verification"] = verify_claims(
@@ -1133,6 +1213,12 @@ def get_user_profile(
     profile = db_service.get_user_profile(db, user_id=int(current_user.id))
     if profile is None:
         raise HTTPException(status_code=404, detail="user not found")
+    profile["calorie_estimate"] = calculate_personalized_calorie_estimate(
+        profile.get("age"),
+        profile.get("weight"),
+        profile.get("height"),
+        profile.get("goal_type"),
+    )
     return profile
 
 
@@ -1154,6 +1240,7 @@ def update_user_profile(
         name=req.name,
         daily_calorie_limit=req.daily_calorie_limit,
         diet_type=diet_type,
+        allergens=req.allergens,
         age=req.age,
         weight=req.weight,
         height=req.height,
@@ -1162,7 +1249,14 @@ def update_user_profile(
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="user not found")
+    updated["calorie_estimate"] = calculate_personalized_calorie_estimate(
+        updated.get("age"),
+        updated.get("weight"),
+        updated.get("height"),
+        updated.get("goal_type"),
+    )
     return updated
+
 
 
 @app.get("/report/daily", tags=["tracking"])
@@ -1178,67 +1272,8 @@ def weekly_report(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    week_logs = db_service.get_week_food_logs(db, int(current_user.id))
-    daily_summaries = []
-    for day_str, logs in week_logs.items():
-        total_cal = sum(float(log.get("calories") or 0) for log in logs)
-        total_products = len(logs)
-        avoid_count = 0
-        for log in logs:
-            mock = {
-                "calories": log["calories"],
-                "sugar": log["sugar"],
-                "salt": log["salt"],
-                "fat": log["fat"],
-                "saturated_fat": log.get("saturated_fat"),
-                "protein": log["protein"],
-                "fiber": log["fiber"],
-                "ingredients": log["ingredients"],
-                "additives": log["additives"],
-            }
-            result = compute_food_health_score(mock)
-            if result.get("decision") == "AVOID":
-                avoid_count += 1
-        # Simple day score: 100 - 15*avoid_count - 5*MODERATE (not counted here)
-        day_score = max(0, 100 - avoid_count * 15)
-        daily_summaries.append(
-            {
-                "date": day_str,
-                "total_calories": round(total_cal, 1),
-                "total_products_scanned": total_products,
-                "avoid_count": avoid_count,
-                "day_score": day_score,
-            }
-        )
-    # Week summary
-    if not daily_summaries:
-        return {"days": [], "week_summary": {"average_day_score": 0, "best_day": None, "worst_day": None, "trend": "STABLE"}}
-    avg_score = sum(d["day_score"] for d in daily_summaries) / len(daily_summaries)
-    best = max(daily_summaries, key=lambda d: d["day_score"])
-    worst = min(daily_summaries, key=lambda d: d["day_score"])
-    # Trend: compare first 3 vs last 3 days
-    first_three = [d["day_score"] for d in daily_summaries[-3:]]
-    last_three = [d["day_score"] for d in daily_summaries[:3]]
-    if len(first_three) == 0 or len(last_three) == 0:
-        trend = "STABLE"
-    else:
-        avg_first = sum(first_three) / len(first_three)
-        avg_last = sum(last_three) / len(last_three)
-        if avg_last > avg_first + 5:
-            trend = "IMPROVING"
-        elif avg_last < avg_first - 5:
-            trend = "DECLINING"
-        else:
-            trend = "STABLE"
-    return {
-        "days": daily_summaries,
-        "week_summary": {
-            "average_day_score": round(avg_score, 1),
-            "best_day": {"date": best["date"], "score": best["day_score"]},
-            "worst_day": {"date": worst["date"], "score": worst["day_score"]},
-            "trend": trend,
-        },
-    }
+    return generate_weekly_report(db, current_user)
+
 
 
 @app.get("/explain/{barcode}", tags=["products"])
@@ -1305,6 +1340,7 @@ def chat_endpoint(
             product_context=req.product_context,
             user=current_user,
             db=db,
+            conversation_history=req.conversation_history,
         )
         return response
     except ValueError as ve:

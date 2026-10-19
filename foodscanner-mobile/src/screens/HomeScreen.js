@@ -8,17 +8,30 @@ import {
   ActivityIndicator,
   Animated,
   Image,
+  Alert,
+  Platform,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 
-import { getDailyReport, getTodayFoods, getUserProfile, getHistory, scanProduct, analyzeManualProduct } from '../services/api';
+import {
+  getDailyReport,
+  getTodayFoods,
+  getUserProfile,
+  getHistory,
+  scanProduct,
+  analyzeManualProduct,
+  deleteFoodLogItem,
+  getNetworkErrorMessage,
+} from '../services/api';
+
 import {
   PREMIUM_COLORS,
   PREMIUM_SHADOWS,
   PREMIUM_RADIUS,
 } from '../theme/premiumTheme';
 import { FoodImage } from '../components/premium';
+import { formatNutritionValue } from '../utils/formatters';
 
 // Curated real food items corresponding to real benchmark packaged food categories
 // Sequence per specification: chips -> makhana -> wafers -> oats -> cereal -> snack
@@ -266,6 +279,45 @@ export default function HomeScreen({ navigation }) {
     }
   };
 
+  const [deletingId, setDeletingId] = useState(null);
+
+  const handleDeleteFood = (logId, name) => {
+    if (!logId) return;
+    const confirmMessage = `Remove "${name || 'this food'}" from today's intake?`;
+    const performDelete = async () => {
+      setDeletingId(logId);
+      try {
+        await deleteFoodLogItem(logId);
+        await fetchData();
+      } catch (err) {
+        const msg = getNetworkErrorMessage(err) || 'Failed to remove food item';
+        if (Platform.OS === 'web') {
+          window.alert(msg);
+        } else {
+          Alert.alert('Error', msg);
+        }
+      } finally {
+        setDeletingId(null);
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined' && window.confirm(confirmMessage)) {
+        performDelete();
+      }
+    } else {
+      Alert.alert(
+        'Remove Intake',
+        confirmMessage,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Remove', style: 'destructive', onPress: performDelete },
+        ]
+      );
+    }
+  };
+
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -413,8 +465,8 @@ export default function HomeScreen({ navigation }) {
                 <Ionicons name="flame-outline" size={15} color="#EA580C" />
                 <Text style={styles.macroTag}>Calories</Text>
               </View>
-              <Text style={styles.macroValue}>{consumedKcal}</Text>
-              <Text style={styles.macroSub}>of {limitKcal} kcal</Text>
+              <Text style={styles.macroValue}>{formatNutritionValue(consumedKcal)}</Text>
+              <Text style={styles.macroSub}>of {formatNutritionValue(limitKcal)} kcal</Text>
               <View style={styles.macroProgressTrack}>
                 <View
                   style={[
@@ -433,8 +485,8 @@ export default function HomeScreen({ navigation }) {
                 <Ionicons name="leaf-outline" size={15} color={PREMIUM_COLORS.primaryDark} />
                 <Text style={styles.macroTag}>Protein</Text>
               </View>
-              <Text style={styles.macroValue}>{Number(protein?.consumed || 0)}g</Text>
-              <Text style={styles.macroSub}>limit {protein?.limit || 50}g</Text>
+              <Text style={styles.macroValue}>{formatNutritionValue(protein?.consumed)}g</Text>
+              <Text style={styles.macroSub}>limit {formatNutritionValue(protein?.limit || 50)}g</Text>
               <View style={styles.macroProgressTrack}>
                 <View
                   style={[
@@ -453,8 +505,8 @@ export default function HomeScreen({ navigation }) {
                 <Ionicons name="nutrition-outline" size={15} color="#D97706" />
                 <Text style={styles.macroTag}>Carbs</Text>
               </View>
-              <Text style={styles.macroValue}>{Number(carbs?.consumed || 0)}g</Text>
-              <Text style={styles.macroSub}>limit {carbs?.limit || 250}g</Text>
+              <Text style={styles.macroValue}>{formatNutritionValue(carbs?.consumed)}g</Text>
+              <Text style={styles.macroSub}>limit {formatNutritionValue(carbs?.limit || 250)}g</Text>
               <View style={styles.macroProgressTrack}>
                 <View
                   style={[
@@ -473,8 +525,8 @@ export default function HomeScreen({ navigation }) {
                 <Ionicons name="water-outline" size={15} color="#0D9488" />
                 <Text style={styles.macroTag}>Sugar</Text>
               </View>
-              <Text style={styles.macroValue}>{Number(sugar?.consumed || 0)}g</Text>
-              <Text style={styles.macroSub}>limit {sugar?.limit || 25}g</Text>
+              <Text style={styles.macroValue}>{formatNutritionValue(sugar?.consumed)}g</Text>
+              <Text style={styles.macroSub}>limit {formatNutritionValue(sugar?.limit || 25)}g</Text>
               <View style={styles.macroProgressTrack}>
                 <View
                   style={[
@@ -609,10 +661,26 @@ export default function HomeScreen({ navigation }) {
                     </Text>
                   </View>
                   <View style={styles.diaryKcalBadge}>
-                    <Text style={styles.diaryKcalText}>{kcal} kcal</Text>
+                    <Text style={styles.diaryKcalText}>{formatNutritionValue(kcal)} kcal</Text>
                   </View>
+                  {f?.id ? (
+                    <TouchableOpacity
+                      style={styles.diaryDeleteBtn}
+                      onPress={() => handleDeleteFood(f.id, pName)}
+                      disabled={deletingId === f.id}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      {deletingId === f.id ? (
+                        <ActivityIndicator size="small" color={PREMIUM_COLORS.status.avoid} />
+                      ) : (
+                        <Ionicons name="trash-outline" size={16} color={PREMIUM_COLORS.status.avoid} />
+                      )}
+                    </TouchableOpacity>
+                  ) : null}
                 </View>
               );
+
             })
           )}
         </Animated.View>
@@ -1099,6 +1167,14 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: PREMIUM_COLORS.ink,
+  },
+  diaryDeleteBtn: {
+    padding: 7,
+    borderRadius: PREMIUM_RADIUS.sm,
+    backgroundColor: PREMIUM_COLORS.status.avoidBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 4,
   },
   emptyDiaryCard: {
     backgroundColor: PREMIUM_COLORS.card,

@@ -56,11 +56,14 @@ function getExpoHostIp() {
 const envBaseUrl = normalizeBaseUrl(process.env.EXPO_PUBLIC_API_BASE_URL);
 const expoHostIp = getExpoHostIp();
 const expoDerivedUrl = expoHostIp ? `http://${expoHostIp}:${API_PORT}` : null;
-const defaultNativeUrl = expoDerivedUrl || DEFAULT_PUBLIC_URL;
+const defaultWebUrl = typeof window !== 'undefined' && window?.location?.hostname
+  ? `http://${window.location.hostname}:${API_PORT}`
+  : `http://localhost:${API_PORT}`;
+
 export const BASE_URL =
   envBaseUrl ||
   (Platform.OS === 'web'
-    ? DEFAULT_PUBLIC_URL
+    ? defaultWebUrl
     : defaultNativeUrl);
 
 console.log('API base URL:', BASE_URL);
@@ -224,6 +227,16 @@ export async function logFoodItem(data) {
   return res.data;
 }
 
+export async function deleteFoodLogItem(logId) {
+  const res = await client.delete(`/food-log/${logId}`);
+  return res.data;
+}
+
+export async function updateFoodLogItem(logId, data) {
+  const res = await client.put(`/food-log/${logId}`, data);
+  return res.data;
+}
+
 export const logFoodManual = async (productName, calories) => {
   const res = await client.post('/food-log', {
     product_name: productName,
@@ -231,6 +244,7 @@ export const logFoodManual = async (productName, calories) => {
   });
   return res.data;
 };
+
 
 export async function getUserProfile() {
   const res = await client.get('/user/profile');
@@ -288,11 +302,12 @@ export async function compareProducts(productA, productB) {
   return res.data;
 }
 
-export async function askNutritionAssistant({ message, barcode, productContext } = {}) {
+export async function askNutritionAssistant({ message, barcode, productContext, conversationHistory } = {}) {
   const payload = {
     message: String(message || '').trim(),
     barcode: barcode ? String(barcode).trim() : null,
     product_context: productContext || null,
+    conversation_history: Array.isArray(conversationHistory) ? conversationHistory : null,
   };
   const res = await client.post('/chat', payload);
   return res.data;

@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator 
 import { Ionicons } from '@expo/vector-icons';
 import { compareProducts } from '../services/api';
 import { PREMIUM_COLORS, PREMIUM_SHADOWS, PREMIUM_RADIUS } from '../theme/premiumTheme';
+import { formatNutritionValue } from '../utils/formatters';
 
 const COMPARE_SUGGESTIONS = ['Parle-G', 'Maggi', 'Kurkure', "Lay's", 'Amul Butter'];
 
@@ -14,12 +15,20 @@ function _scorePill(score) {
   return { text: `${s}`, bg: PREMIUM_COLORS.status.avoidBg, fg: PREMIUM_COLORS.status.avoid };
 }
 
-export default function ComparisonCard({ currentProduct = null }) {
+export default function ComparisonCard({ currentProduct = null, alternatives = [] }) {
   const [expanded, setExpanded] = useState(false);
   const [targetQuery, setTargetQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [comparison, setComparison] = useState(null);
   const [error, setError] = useState(null);
+
+  const alternativeSuggestions = React.useMemo(() => {
+    if (!Array.isArray(alternatives)) return [];
+    return alternatives
+      .map((a) => (typeof a === 'string' ? a : a?.product_name || a?.name))
+      .filter((n) => typeof n === 'string' && n.trim().length > 0)
+      .slice(0, 3);
+  }, [alternatives]);
 
   const currentIdentifier =
     currentProduct?.barcode && String(currentProduct.barcode) !== '00000000'
@@ -124,7 +133,29 @@ export default function ComparisonCard({ currentProduct = null }) {
       {/* Benchmark Suggestions */}
       {!comparison && (
         <View style={styles.suggestionsWrap}>
-          <Text style={styles.suggestionsLabel}>Quick comparisons:</Text>
+          {alternativeSuggestions.length > 0 ? (
+            <View style={{ marginBottom: 10 }}>
+              <Text style={styles.suggestionsLabel}>Compare with healthier alternatives:</Text>
+              <View style={styles.chipsRow}>
+                {alternativeSuggestions.map((item) => (
+                  <TouchableOpacity
+                    key={item}
+                    style={[styles.chip, styles.alternativeChip]}
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      setTargetQuery(item);
+                      handleCompare(item);
+                    }}
+                  >
+                    <Ionicons name="sparkles" size={11} color={PREMIUM_COLORS.primaryDark} style={{ marginRight: 4 }} />
+                    <Text style={[styles.chipText, styles.alternativeChipText]}>{item}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          ) : null}
+
+          <Text style={styles.suggestionsLabel}>Popular benchmarks:</Text>
           <View style={styles.chipsRow}>
             {COMPARE_SUGGESTIONS.map((item) => (
               <TouchableOpacity
@@ -211,11 +242,11 @@ export default function ComparisonCard({ currentProduct = null }) {
               return (
                 <View key={m.key} style={styles.metricRow}>
                   <Text style={[styles.metricVal, highlightA && styles.metricValWinner]}>
-                    {validA ? `${valA}${m.unit}` : '—'}
+                    {validA ? (m.key === 'health_score' ? `${Math.round(valA)}${m.unit}` : `${formatNutritionValue(valA)}${m.unit}`) : '—'}
                   </Text>
                   <Text style={styles.metricLabel}>{m.label}</Text>
                   <Text style={[styles.metricVal, { textAlign: 'right' }, highlightB && styles.metricValWinner]}>
-                    {validB ? `${valB}${m.unit}` : '—'}
+                    {validB ? (m.key === 'health_score' ? `${Math.round(valB)}${m.unit}` : `${formatNutritionValue(valB)}${m.unit}`) : '—'}
                   </Text>
                 </View>
               );
@@ -341,6 +372,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: PREMIUM_COLORS.ink,
+  },
+  alternativeChip: {
+    backgroundColor: PREMIUM_COLORS.primaryLight,
+    borderWidth: 1,
+    borderColor: PREMIUM_COLORS.status.safeBorder,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  alternativeChipText: {
+    color: PREMIUM_COLORS.primaryDark,
+    fontWeight: '700',
   },
   errorBox: {
     flexDirection: 'row',

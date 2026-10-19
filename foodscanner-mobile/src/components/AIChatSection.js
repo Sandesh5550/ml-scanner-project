@@ -56,6 +56,7 @@ export default function AIChatSection({
         message,
         barcode: barcode && String(barcode) !== '00000000' ? String(barcode) : null,
         productContext,
+        conversationHistory: messages.slice(-6),
       });
 
       const reply = res?.reply || res?.response || res?.answer || 'I evaluated the product nutrition and ingredients based on scientific nutritional standards.';
