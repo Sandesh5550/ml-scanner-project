@@ -584,7 +584,8 @@ def health() -> dict:
 
 
 @app.post("/register", tags=["auth"])
-def register(req: RegisterRequest, db: Session = Depends(get_db)) -> dict:
+def register(req: RegisterRequest, request: Request, db: Session = Depends(get_db)) -> dict:
+    enforce_rate_limit("auth", request)
     email = (req.email or "").strip().lower()
     password = req.password or ""
     if not email or not password:
@@ -611,7 +612,8 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)) -> dict:
 
 
 @app.post("/login", tags=["auth"])
-def login(req: LoginRequest, db: Session = Depends(get_db)) -> dict:
+def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)) -> dict:
+    enforce_rate_limit("auth", request)
     email = (req.email or "").strip().lower()
     password = req.password or ""
     if not email or not password:

@@ -34,11 +34,13 @@ class SlidingWindowRateLimiter:
         ocr_limit = int(os.getenv("RATE_LIMIT_OCR", "5"))
         chat_limit = int(os.getenv("RATE_LIMIT_CHAT", "15"))
         scan_limit = int(os.getenv("RATE_LIMIT_SCAN", "30"))
+        auth_limit = int(os.getenv("RATE_LIMIT_AUTH", "5"))
         window = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
         return {
             "ocr": (ocr_limit, window),
             "chat": (chat_limit, window),
             "scan": (scan_limit, window),
+            "auth": (auth_limit, window),
         }
 
     def check_rate_limit(
@@ -99,10 +101,13 @@ def get_client_key(request: Request, user_id: Optional[int] = None) -> str:
         return f"user:{user_id}"
 
     # Fallback to client IP for unauthenticated requests
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        client_ip = forwarded.split(",")[0].strip()
-        return f"ip:{client_ip}"
+    trust_proxy = os.getenv("TRUST_PROXY_HEADERS", "true").strip().lower() in {"1", "true", "yes"}
+    if trust_proxy:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            client_ip = forwarded.split(",")[0].strip()
+            if client_ip and len(client_ip) <= 64 and not any(c in client_ip for c in " \t\r\n"):
+                return f"ip:{client_ip}"
 
     if request.client and request.client.host:
         return f"ip:{request.client.host}"

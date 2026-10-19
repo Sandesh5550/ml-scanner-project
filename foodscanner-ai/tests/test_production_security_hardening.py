@@ -113,16 +113,22 @@ class TestSlidingWindowRateLimiter:
         allowed_chat, _ = limiter.check_rate_limit("chat", client)
         assert allowed_chat is True
 
-    def test_client_key_resolution(self):
+    def test_client_key_resolution(self, monkeypatch):
         # Authenticated user
         mock_req = MagicMock()
         mock_req.headers = {}
         assert get_client_key(mock_req, user_id=10) == "user:10"
 
-        # Anonymous with X-Forwarded-For
+        # Anonymous with X-Forwarded-For (when trust proxy enabled)
+        monkeypatch.setenv("TRUST_PROXY_HEADERS", "true")
         mock_req_xf = MagicMock()
         mock_req_xf.headers = {"x-forwarded-for": "203.0.113.195, 70.41.3.18"}
         assert get_client_key(mock_req_xf, user_id=None) == "ip:203.0.113.195"
+
+        # Anonymous with X-Forwarded-For when trust proxy is disabled (prevents IP spoofing)
+        monkeypatch.setenv("TRUST_PROXY_HEADERS", "false")
+        mock_req_xf.client.host = "198.51.100.2"
+        assert get_client_key(mock_req_xf, user_id=None) == "ip:198.51.100.2"
 
         # Anonymous direct client host
         mock_req_direct = MagicMock()
@@ -347,5 +353,75 @@ class TestFastAPIHardeningEndpoints:
         assert resp.status_code == 429
         assert "Rate limit exceeded" in resp.json()["detail"]
         assert "Retry-After" in resp.headers
+
+    def test_login_rate_limit_enforced(self, client):
+        limiter = get_rate_limiter()
+        limiter.reset()
+
+        # Configured auth limit is 5 attempts per window
+        for i in range(5):
+            resp = client.post(
+                "/login",
+                json={"email": f"ratelimit_login_{i}@example.com", "password": "WrongPassword123!"},
+            )
+            assert resp.status_code == 401
+
+        # 6th attempt must return 429
+        resp = client.post(
+            "/login",
+            json={"email": "ratelimit_login_exceeded@example.com", "password": "WrongPassword123!"},
+        )
+        assert resp.status_code == 429
+        assert "Rate limit exceeded for auth" in resp.json()["detail"]
+        assert "Retry-After" in resp.headers
+
+    def test_register_rate_limit_enforced(self, client):
+        limiter = get_rate_limiter()
+        limiter.reset()
+
+        # Configured auth limit is 5 attempts per window
+        for i in range(5):
+            resp = client.post(
+                "/register",
+                json={"email": f"new_rate_user_{i}@example.com", "password": "ValidPassword123!"},
+            )
+            assert resp.status_code in (200, 400)
+
+        # 6th attempt must return 429
+        resp = client.post(
+            "/register",
+            json={"email": "new_rate_user_exceeded@example.com", "password": "ValidPassword123!"},
+        )
+        assert resp.status_code == 429
+        assert "Rate limit exceeded for auth" in resp.json()["detail"]
+        assert "Retry-After" in resp.headers
+
+    def test_login_register_normal_behavior_under_limit(self, client):
+        limiter = get_rate_limiter()
+        limiter.reset()
+
+        unique_email = f"normal_user_{int(time.time())}@example.com"
+        # 1. Register successfully
+        reg_resp = client.post(
+            "/register",
+            json={"email": unique_email, "password": "StrongPassword123!", "name": "Normal User"},
+        )
+        assert reg_resp.status_code == 200
+        assert "access_token" in reg_resp.json()
+
+        # 2. Login successfully
+        login_resp = client.post(
+            "/login",
+            json={"email": unique_email, "password": "StrongPassword123!"},
+        )
+        assert login_resp.status_code == 200
+        assert "access_token" in login_resp.json()
+
+        # 3. Invalid credentials returns 401, not 429
+        invalid_resp = client.post(
+            "/login",
+            json={"email": unique_email, "password": "WrongPassword!"},
+        )
+        assert invalid_resp.status_code == 401
 
 
