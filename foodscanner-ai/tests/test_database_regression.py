@@ -436,18 +436,45 @@ def test_database_url_redaction_and_config():
 # ---------------------------------------------------------------------------
 # 15. Optional Live PostgreSQL Integration Test
 # ---------------------------------------------------------------------------
-@pytest.mark.skipif(
-    not os.getenv("TEST_POSTGRES_URL"),
-    reason="Live PostgreSQL integration test skipped; set TEST_POSTGRES_URL to enable.",
-)
 def test_live_postgresql_integration():
-    """Optional live PostgreSQL integration test when TEST_POSTGRES_URL is configured."""
-    pg_url = os.environ["TEST_POSTGRES_URL"]
+    """Optional live PostgreSQL integration test when TEST_POSTGRES_URL or TEST_DATABASE_URL is configured."""
+    pg_url = os.environ.get("TEST_POSTGRES_URL") or os.environ.get("TEST_DATABASE_URL")
+    is_ci = str(os.getenv("GITHUB_ACTIONS", "")).strip().lower() == "true" or str(os.getenv("CI", "")).strip().lower() == "true"
+
+    if not pg_url or not pg_url.startswith("postgres"):
+        if is_ci:
+            pytest.fail(
+                "Live PostgreSQL integration test is required in GitHub Actions CI, "
+                "but neither TEST_POSTGRES_URL nor TEST_DATABASE_URL is configured."
+            )
+        pytest.skip("Live PostgreSQL integration test skipped; set TEST_POSTGRES_URL or TEST_DATABASE_URL to enable.")
+
     engine = create_database_engine(pg_url)
     assert engine.dialect.name == "postgresql"
     with engine.connect() as conn:
         val = conn.execute(text("SELECT 1")).scalar()
         assert val == 1
+
+
+def test_database_regression_ci_guard_fails_in_ci_when_unconfigured(monkeypatch):
+    """Verify that live PostgreSQL regression test fails loudly in CI if test URL is missing."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.delenv("TEST_POSTGRES_URL", raising=False)
+    monkeypatch.delenv("TEST_DATABASE_URL", raising=False)
+
+    with pytest.raises(pytest.fail.Exception, match=r"Live PostgreSQL integration test is required in GitHub Actions CI"):
+        test_live_postgresql_integration()
+
+
+def test_database_regression_ci_guard_skips_in_local_dev(monkeypatch):
+    """Verify that live PostgreSQL regression test skips gracefully in local dev if test URL is missing."""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("TEST_POSTGRES_URL", raising=False)
+    monkeypatch.delenv("TEST_DATABASE_URL", raising=False)
+
+    with pytest.raises(pytest.skip.Exception, match=r"Live PostgreSQL integration test skipped"):
+        test_live_postgresql_integration()
 
 
 # ---------------------------------------------------------------------------

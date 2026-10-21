@@ -4,68 +4,23 @@ import Constants from 'expo-constants';
 import { getToken, removeToken } from '../utils/storage';
 import { resetToLogin } from '../utils/navigationRef';
 
-const DEFAULT_PUBLIC_URL = 'https://foodscanner-ai.onrender.com';
-const API_PORT = '8000';
+import {
+  DEFAULT_PUBLIC_URL,
+  API_PORT,
+  getExpoHostIp as resolveExpoHostIp,
+  resolveBaseUrl,
+} from '../utils/urlResolver';
 
-function normalizeBaseUrl(url) {
-  if (!url || typeof url !== 'string') return null;
-  return url.trim().replace(/\/+$/, '');
-}
+export { DEFAULT_PUBLIC_URL, API_PORT };
 
-function extractHost(value) {
-  if (!value || typeof value !== 'string') return null;
-
-  const rawValue = value.trim();
-  if (!rawValue) return null;
-
-  try {
-    const withProtocol = rawValue.includes('://') ? rawValue : `http://${rawValue}`;
-    const parsed = new URL(withProtocol);
-    return parsed.hostname || null;
-  } catch (_e) {
-    const host = rawValue.split('/')[0].split(':')[0];
-    return host || null;
-  }
-}
-
-function getExpoHostIp() {
-  try {
-    const candidates = [
-      Constants?.expoConfig?.hostUri,
-      Constants?.expoGoConfig?.debuggerHost,
-      Constants?.manifest?.debuggerHost,
-      Constants?.manifest?.hostUri,
-      Constants?.manifest2?.extra?.expoClient?.hostUri,
-      Constants?.manifest2?.extra?.expoClient?.debuggerHost,
-      Constants?.linkingUri,
-      Constants?.experienceUrl,
-    ];
-
-    for (const candidate of candidates) {
-      const host = extractHost(candidate);
-      if (host && host !== 'localhost' && host !== '127.0.0.1') {
-        return host;
-      }
-    }
-  } catch (_e) {
-    // Fall through to default URL
-  }
-  return null;
-}
-
-const envBaseUrl = normalizeBaseUrl(process.env.EXPO_PUBLIC_API_BASE_URL);
-const expoHostIp = getExpoHostIp();
-const expoDerivedUrl = expoHostIp ? `http://${expoHostIp}:${API_PORT}` : null;
-const defaultNativeUrl = expoDerivedUrl || DEFAULT_PUBLIC_URL;
-const defaultWebUrl = typeof window !== 'undefined' && window?.location?.hostname
-  ? `http://${window.location.hostname}:${API_PORT}`
-  : `http://localhost:${API_PORT}`;
-
-export const BASE_URL =
-  envBaseUrl ||
-  (Platform.OS === 'web'
-    ? defaultWebUrl
-    : defaultNativeUrl);
+export const BASE_URL = resolveBaseUrl({
+  rawEnvUrl: process.env.EXPO_PUBLIC_API_BASE_URL,
+  platform: Platform.OS,
+  windowHostname: typeof window !== 'undefined' && window?.location?.hostname ? window.location.hostname : null,
+  expoHostIp: resolveExpoHostIp(Constants),
+  defaultPublicUrl: DEFAULT_PUBLIC_URL,
+  port: API_PORT,
+});
 
 console.log('API base URL:', BASE_URL);
 

@@ -66,20 +66,137 @@ function calculateServingNutrition(baseNutrition100g, servingGrams) {
 }
 
 describe('Mobile API and URL Resolution Logic', () => {
+  const {
+    DEFAULT_PUBLIC_URL: PROD_DEFAULT_PUBLIC_URL,
+    API_PORT: PROD_API_PORT,
+    normalizeBaseUrl: prodNormalizeBaseUrl,
+    extractHost: prodExtractHost,
+    getExpoHostIp: prodGetExpoHostIp,
+    resolveBaseUrl: prodResolveBaseUrl,
+  } = require('../src/utils/urlResolver');
+
   test('normalizeBaseUrl removes trailing slashes and whitespace', () => {
-    assert.strictEqual(normalizeBaseUrl('  http://192.168.1.50:8000/// '), 'http://192.168.1.50:8000');
-    assert.strictEqual(normalizeBaseUrl('https://api.foodscanner.com/'), 'https://api.foodscanner.com');
-    assert.strictEqual(normalizeBaseUrl(null), null);
-    assert.strictEqual(normalizeBaseUrl(undefined), null);
-    assert.strictEqual(normalizeBaseUrl(''), null);
+    assert.strictEqual(prodNormalizeBaseUrl('  http://192.168.1.50:8000/// '), 'http://192.168.1.50:8000');
+    assert.strictEqual(prodNormalizeBaseUrl('https://api.foodscanner.com/'), 'https://api.foodscanner.com');
+    assert.strictEqual(prodNormalizeBaseUrl(null), null);
+    assert.strictEqual(prodNormalizeBaseUrl(undefined), null);
+    assert.strictEqual(prodNormalizeBaseUrl(''), null);
+    assert.strictEqual(prodNormalizeBaseUrl('   '), null);
   });
 
   test('extractHost parses host from various Expo debugger candidates', () => {
-    assert.strictEqual(extractHost('192.168.1.45:8081'), '192.168.1.45');
-    assert.strictEqual(extractHost('http://10.0.2.2:8081/index.bundle'), '10.0.2.2');
-    assert.strictEqual(extractHost('exp://192.168.0.10:8081'), '192.168.0.10');
-    assert.strictEqual(extractHost(''), null);
-    assert.strictEqual(extractHost(null), null);
+    assert.strictEqual(prodExtractHost('192.168.1.45:8081'), '192.168.1.45');
+    assert.strictEqual(prodExtractHost('http://10.0.2.2:8081/index.bundle'), '10.0.2.2');
+    assert.strictEqual(prodExtractHost('exp://192.168.0.10:8081'), '192.168.0.10');
+    assert.strictEqual(prodExtractHost(''), null);
+    assert.strictEqual(prodExtractHost(null), null);
+  });
+
+  test('getExpoHostIp extracts valid non-loopback host from Constants candidates', () => {
+    assert.strictEqual(prodGetExpoHostIp({ expoConfig: { hostUri: '192.168.1.45:8081' } }), '192.168.1.45');
+    assert.strictEqual(prodGetExpoHostIp({ expoGoConfig: { debuggerHost: '10.0.2.2:8081' } }), '10.0.2.2');
+    assert.strictEqual(prodGetExpoHostIp({ manifest: { debuggerHost: '172.20.10.4:8081' } }), '172.20.10.4');
+    assert.strictEqual(prodGetExpoHostIp({ manifest2: { extra: { expoClient: { hostUri: '192.168.0.100:8081' } } } }), '192.168.0.100');
+    // Loopback hosts must be rejected to allow fallback to production
+    assert.strictEqual(prodGetExpoHostIp({ expoConfig: { hostUri: 'localhost:8081' } }), null);
+    assert.strictEqual(prodGetExpoHostIp({ expoConfig: { hostUri: '127.0.0.1:8081' } }), null);
+    assert.strictEqual(prodGetExpoHostIp(null), null);
+  });
+
+  test('resolveBaseUrl: 1. Explicit EXPO_PUBLIC_API_BASE_URL override takes top precedence', () => {
+    const explicitUrl = 'https://custom-api.foodscanner.com';
+    // Overrides web platform
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: explicitUrl, platform: 'web', windowHostname: 'my-web.com' }),
+      'https://custom-api.foodscanner.com'
+    );
+    // Overrides iOS platform even with active Expo LAN host
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: explicitUrl, platform: 'ios', expoHostIp: '192.168.1.99' }),
+      'https://custom-api.foodscanner.com'
+    );
+    // Overrides Android platform
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: explicitUrl, platform: 'android', expoHostIp: '10.0.2.2' }),
+      'https://custom-api.foodscanner.com'
+    );
+    // Normalizes trailing slashes and whitespace
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: '  https://custom-api.foodscanner.com///  ', platform: 'ios' }),
+      'https://custom-api.foodscanner.com'
+    );
+  });
+
+  test('resolveBaseUrl: 2. Web browser origin fallback when env URL is unset', () => {
+    // When windowHostname is present, uses hostname with port 8000
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: null, platform: 'web', windowHostname: 'foodscanner.app' }),
+      'http://foodscanner.app:8000'
+    );
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: '', platform: 'web', windowHostname: '192.168.1.10' }),
+      'http://192.168.1.10:8000'
+    );
+    // When windowHostname is null, undefined, or empty, defaults to localhost:8000
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: null, platform: 'web', windowHostname: null }),
+      'http://localhost:8000'
+    );
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: '   ', platform: 'web', windowHostname: '' }),
+      'http://localhost:8000'
+    );
+    // Preserves custom port parameter if specified
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: null, platform: 'web', windowHostname: 'localhost', port: '8080' }),
+      'http://localhost:8080'
+    );
+  });
+
+  test('resolveBaseUrl: 3. Native iOS/Android Expo LAN IP fallback during local development', () => {
+    // iOS with Expo LAN host IP
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: null, platform: 'ios', expoHostIp: '192.168.1.55' }),
+      'http://192.168.1.55:8000'
+    );
+    // Android with Expo LAN host IP
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: null, platform: 'android', expoHostIp: '10.0.2.2' }),
+      'http://10.0.2.2:8000'
+    );
+    // Preserves custom port on native LAN
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: null, platform: 'ios', expoHostIp: '192.168.1.55', port: '9000' }),
+      'http://192.168.1.55:9000'
+    );
+  });
+
+  test('resolveBaseUrl: 4. Native production fallback to DEFAULT_PUBLIC_URL when Expo host is unavailable', () => {
+    // iOS standalone production build (expoHostIp is null)
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: null, platform: 'ios', expoHostIp: null }),
+      'https://foodscanner-ai.onrender.com'
+    );
+    // Android standalone production build (expoHostIp is undefined)
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: null, platform: 'android', expoHostIp: undefined }),
+      'https://foodscanner-ai.onrender.com'
+    );
+    // Empty string expoHostIp falls back to production URL
+    assert.strictEqual(
+      prodResolveBaseUrl({ rawEnvUrl: null, platform: 'ios', expoHostIp: '   ' }),
+      'https://foodscanner-ai.onrender.com'
+    );
+    // Default constant matches exported DEFAULT_PUBLIC_URL
+    assert.strictEqual(
+      prodResolveBaseUrl({ platform: 'ios' }),
+      PROD_DEFAULT_PUBLIC_URL
+    );
+    // Custom defaultPublicUrl is respected
+    assert.strictEqual(
+      prodResolveBaseUrl({ platform: 'android', defaultPublicUrl: 'https://staging.foodscanner.com' }),
+      'https://staging.foodscanner.com'
+    );
   });
 
   test('getNetworkErrorMessage provides user-friendly backend offline advice', () => {

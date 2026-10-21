@@ -421,11 +421,30 @@ def test_downgrade_and_reupgrade_cycle(tmp_path):
     assert "allergens" in {c["name"] for c in inspector_head.get_columns("users")}
 
 
+def get_postgresql_test_url() -> str:
+    """Retrieve configured PostgreSQL test connection URL.
+
+    - In local dev (GITHUB_ACTIONS and CI unset): skips test gracefully if URL is unconfigured.
+    - In GitHub Actions CI (GITHUB_ACTIONS=true or CI=true): fails immediately if URL is missing,
+      preventing silent false-positive skips when CI is misconfigured.
+    """
+    pg_url = os.getenv("TEST_DATABASE_URL") or os.getenv("POSTGRES_TEST_URL")
+    is_ci = str(os.getenv("GITHUB_ACTIONS", "")).strip().lower() == "true" or str(os.getenv("CI", "")).strip().lower() == "true"
+
+    if not pg_url or not pg_url.startswith("postgres"):
+        if is_ci:
+            pytest.fail(
+                "PostgreSQL integration test service is required in GitHub Actions CI, "
+                "but neither TEST_DATABASE_URL nor POSTGRES_TEST_URL is configured."
+            )
+        pytest.skip("PostgreSQL test service not configured (TEST_DATABASE_URL not set).")
+
+    return pg_url
+
+
 def test_postgresql_compatibility_where_available():
     """7. Verify PostgreSQL compatibility when a live test database is configured."""
-    pg_url = os.getenv("TEST_DATABASE_URL") or os.getenv("POSTGRES_TEST_URL")
-    if not pg_url or not pg_url.startswith("postgres"):
-        pytest.skip("PostgreSQL test service not configured (TEST_DATABASE_URL not set).")
+    pg_url = get_postgresql_test_url()
 
     cfg = _get_alembic_config(pg_url)
     engine = create_database_engine(pg_url)
@@ -440,6 +459,27 @@ def test_postgresql_compatibility_where_available():
     command.downgrade(cfg, "base")
     inspector_after = inspect(engine)
     assert "ocr_jobs" not in set(inspector_after.get_table_names())
+
+
+def test_postgresql_ci_guard_fails_in_ci_when_unconfigured(monkeypatch):
+    """Verify that when running in GitHub Actions CI, missing PostgreSQL test URL fails loudly."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.delenv("TEST_DATABASE_URL", raising=False)
+    monkeypatch.delenv("POSTGRES_TEST_URL", raising=False)
+
+    with pytest.raises(pytest.fail.Exception, match=r"PostgreSQL integration test service is required in GitHub Actions CI"):
+        get_postgresql_test_url()
+
+
+def test_postgresql_ci_guard_skips_in_local_dev_when_unconfigured(monkeypatch):
+    """Verify that when running in local development, missing PostgreSQL test URL gracefully skips."""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("TEST_DATABASE_URL", raising=False)
+    monkeypatch.delenv("POSTGRES_TEST_URL", raising=False)
+
+    with pytest.raises(pytest.skip.Exception, match=r"PostgreSQL test service not configured"):
+        get_postgresql_test_url()
 
 
 def test_render_configuration_has_pre_deploy_migration():
