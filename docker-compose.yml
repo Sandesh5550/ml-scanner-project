@@ -1,13 +1,34 @@
 services:
   # ============================================================================
-  # 1. FastAPI Backend (PRAMAAN AI Core Engine)
+  # 1. Database Migration Runner (One-shot run before backend workers start)
+  # ============================================================================
+  migration:
+    build:
+      context: ./foodscanner-ai
+      dockerfile: Dockerfile
+    image: foodscanner-ai:latest
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/database/foodscanner.db}
+    volumes:
+      - ./foodscanner-ai/database:/app/database
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+    networks:
+      - pramaan-net
+
+  # ============================================================================
+  # 2. FastAPI Backend (PRAMAAN AI Core Engine)
   # ============================================================================
   backend:
     build:
       context: ./foodscanner-ai
       dockerfile: Dockerfile
     image: foodscanner-ai:latest
-    container_name: pramaan-backend
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -15,7 +36,7 @@ services:
       - PORT=8000
       - ENVIRONMENT=development
       - SECRET_KEY=${SECRET_KEY:-pramaan-local-dev-secret-key-minimum-32-chars}
-      - DATABASE_URL=sqlite:////app/database/foodscanner.db
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/database/foodscanner.db}
       - FOODSCANNER_OCR_ENGINE=tesseract
       - AI_PROVIDER=mock
       - AI_MODEL=gemini-1.5-flash
@@ -28,11 +49,17 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+        required: false
     networks:
       - pramaan-net
 
   # ============================================================================
-  # 2. Optional PostgreSQL Service (Activated with: docker compose --profile postgres up)
+  # 3. Optional PostgreSQL Service (Activated with: docker compose --profile postgres up)
   # ============================================================================
   postgres:
     image: postgres:16-alpine
@@ -58,7 +85,7 @@ services:
       - pramaan-net
 
   # ============================================================================
-  # 3. Prometheus Monitoring (Activated with: docker compose --profile monitoring up)
+  # 4. Prometheus Monitoring (Activated with: docker compose --profile monitoring up)
   # ============================================================================
   prometheus:
     image: prom/prometheus:v2.54.1
@@ -88,7 +115,7 @@ services:
       - pramaan-net
 
   # ============================================================================
-  # 4. Grafana Dashboards (Activated with: docker compose --profile monitoring up)
+  # 5. Grafana Dashboards (Activated with: docker compose --profile monitoring up)
   # ============================================================================
   grafana:
     image: grafana/grafana:11.2.0

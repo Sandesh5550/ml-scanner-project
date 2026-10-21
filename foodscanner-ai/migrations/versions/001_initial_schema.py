@@ -19,6 +19,25 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    existing_tables = set(inspector.get_table_names())
+
+    # Preflight check: prevent unsafe upgrade on existing unversioned database
+    if "users" in existing_tables:
+        raise RuntimeError(
+            "\n[ALEMBIC SAFETY PREFLIGHT ERROR] Unversioned database with existing tables detected.\n"
+            "Directly running 'alembic upgrade' will fail because baseline migration '001_initial_schema' "
+            "attempts to create tables that already exist.\n\n"
+            "OPERATOR ACTION REQUIRED:\n"
+            "1. Verify that your existing database schema matches baseline revision 001_initial_schema.\n"
+            "2. If and only if the schema matches the baseline, stamp the baseline revision manually:\n"
+            "       alembic stamp 001_initial_schema\n"
+            "3. Then apply pending revisions:\n"
+            "       alembic upgrade head\n"
+            "Never automatically stamp an unverified database."
+        )
+
     # 1. users
     op.create_table(
         'users',

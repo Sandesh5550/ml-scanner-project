@@ -38,11 +38,30 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 3. Initialize database
+### 3. Initialize database and apply migrations
+
+Production migrations are decoupled from application workers to prevent multi-worker concurrency and race conditions:
+
+- **Render Deployments:** Executed once in an isolated pre-deploy container before workers launch via `preDeployCommand: alembic upgrade head` in `render.yaml`.
+- **Docker Compose:** Executed once via the dedicated one-shot `migration` service before the `backend` workers start (`condition: service_completed_successfully`).
+- **Local / Manual Execution:** Run migrations once before starting multi-worker Uvicorn:
+
+```bash
+alembic upgrade head
+```
+
+Or run the initialization script:
 
 ```bash
 python -m database.init_db
 ```
+
+> **Note for existing unversioned databases:**
+> If you have an existing database created before Alembic versioning was enabled, verify your schema matches baseline 001 and stamp it first:
+> ```bash
+> alembic stamp 001_initial_schema
+> alembic upgrade head
+> ```
 
 ### 4. Train ML model (optional)
 

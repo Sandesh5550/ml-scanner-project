@@ -50,6 +50,9 @@ CREATE TABLE IF NOT EXISTS scan_history (
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
+-- Legacy table: retained for backward compatibility with initial raw SQLite scripts;
+-- not mapped by SQLAlchemy models or managed by Alembic. User dietary parameters
+-- are stored directly on the 'users' table (daily_calorie_limit, diet_type, allergens).
 CREATE TABLE IF NOT EXISTS user_diet_profile (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     max_calories REAL,

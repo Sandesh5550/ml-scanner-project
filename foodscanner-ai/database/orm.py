@@ -100,13 +100,13 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
-def init_db(target_engine: Optional[Engine] = None) -> None:
+def init_db(target_engine: Optional[Engine] = None, auto_upgrade: bool = False) -> None:
     """Initialize database tables and run schema migrations.
-    
+
     Delegates to database.init_db.init_db which respects Alembic-managed production
     schemas and dialect-safe initialization.
     """
     from database.init_db import init_db as _init_db_impl
 
-    _init_db_impl(target_engine=target_engine or engine)
+    _init_db_impl(target_engine=target_engine or engine, auto_upgrade=auto_upgrade)
 

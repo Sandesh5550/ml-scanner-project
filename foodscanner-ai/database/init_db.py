@@ -47,6 +47,8 @@ def run_migrations(engine: Engine) -> None:
                     conn.execute(text("ALTER TABLE users ADD COLUMN weight FLOAT"))
                 if "height" not in cols:
                     conn.execute(text("ALTER TABLE users ADD COLUMN height FLOAT"))
+                if "diet_type" not in cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN diet_type VARCHAR(100)"))
                 if "goal_type" not in cols:
                     conn.execute(text("ALTER TABLE users ADD COLUMN goal_type VARCHAR(100)"))
                 if "goal_target_days" not in cols:
@@ -106,6 +108,13 @@ def run_migrations(engine: Engine) -> None:
                 ocr_cols = {c["name"] for c in inspector.get_columns("ocr_jobs")}
                 if "started_at" not in ocr_cols:
                     conn.execute(text("ALTER TABLE ocr_jobs ADD COLUMN started_at VARCHAR(100)"))
+
+            # Ensure indexes exist on ocr_jobs (safe to repeat)
+            existing_ocr_indexes = {idx["name"] for idx in inspector.get_indexes("ocr_jobs")}
+            if "ix_ocr_jobs_user_id" not in existing_ocr_indexes:
+                conn.execute(text("CREATE INDEX ix_ocr_jobs_user_id ON ocr_jobs (user_id)"))
+            if "ix_ocr_jobs_status" not in existing_ocr_indexes:
+                conn.execute(text("CREATE INDEX ix_ocr_jobs_status ON ocr_jobs (status)"))
     except Exception as e:
         logger.error(f"Migration check failed: {e}")
         raise
@@ -180,15 +189,41 @@ def _ensure_default_user_conn(conn: Connection) -> None:
                     pass
 
 
+def run_alembic_upgrade(engine: Engine) -> None:
+    """Run Alembic migrations up to head using Alembic's programmatic API.
+
+    Ensures Alembic is the authoritative schema migration engine.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    alembic_ini_path = BASE_DIR.parent / "alembic.ini"
+    if not alembic_ini_path.exists():
+        alembic_ini_path = Path(__file__).resolve().parents[1] / "alembic.ini"
+
+    alembic_cfg = Config(str(alembic_ini_path))
+    alembic_cfg.set_main_option("sqlalchemy.url", str(engine.url))
+
+    with engine.connect() as conn:
+        alembic_cfg.attributes["connection"] = conn
+        command.upgrade(alembic_cfg, "head")
+
+
 def init_db(
     db_path: Optional[Path] = None,
     schema_path: Optional[Path] = None,
     target_engine: Optional[Engine] = None,
+    auto_upgrade: bool = False,
 ) -> None:
     """Dialect-safe database initialization for both SQLite and PostgreSQL.
-    
-    Uses declarative SQLAlchemy schema creation rather than raw SQLite scripts.
-    In production environments managed by Alembic, this does not overwrite migration schema.
+
+    Uses Alembic as the authoritative migration runner when available.
+    To prevent multi-worker startup race conditions in production, automatic in-process
+    Alembic migrations are disabled by default during worker startup (auto_upgrade=False).
+    Run migrations before starting multiple workers using:
+        alembic upgrade head
+    or:
+        python -m database.init_db
     """
     from database.orm import Base, create_database_engine, engine as default_engine
 
@@ -208,15 +243,38 @@ def init_db(
         table_names = set(inspector.get_table_names())
         is_alembic_managed = "alembic_version" in table_names
 
-        # If not managed by Alembic, create tables via SQLAlchemy Base metadata
-        if not is_alembic_managed:
-            Base.metadata.create_all(bind=conn)
+    should_upgrade = auto_upgrade or os.getenv("ALEMBIC_AUTO_UPGRADE", "").strip().lower() in ("1", "true", "yes")
 
-    # Run any column additions if needed for non-alembic dev environments
-    run_migrations(eng)
+    if is_alembic_managed:
+        if should_upgrade:
+            logger.info("Database is versioned by Alembic; applying pending migrations to head.")
+            try:
+                run_alembic_upgrade(eng)
+            except Exception as exc:
+                logger.error(f"Alembic upgrade failed on Alembic-managed database: {exc}")
+                raise
+        else:
+            with eng.connect() as check_conn:
+                current_rev = check_conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+            logger.info(
+                f"Database is versioned by Alembic (current revision: {current_rev}). In-process auto-upgrade is disabled during startup "
+                "to prevent multi-worker concurrency. Ensure 'alembic upgrade head' is executed as a deployment step."
+            )
+            if current_rev != "002_add_ocr_jobs_and_allergens":
+                logger.warning(
+                    f"DATABASE MIGRATION WARNING: Current database revision is '{current_rev}', which is behind head ('002_add_ocr_jobs_and_allergens'). "
+                    "Pending migrations have not been applied. Run 'alembic upgrade head' before serving production traffic."
+                )
+    else:
+        # Unversioned database: create schema via SQLAlchemy Base metadata and run fallback ad-hoc migrations.
+        # Does NOT automatically stamp as head without schema verification.
+        with eng.begin() as conn:
+            Base.metadata.create_all(bind=conn)
+        run_migrations(eng)
+
     ensure_default_user(eng)
     logger.info(f"Database initialized safely for dialect: {eng.dialect.name}")
 
 
 if __name__ == "__main__":
-    init_db()
+    init_db(auto_upgrade=True)
