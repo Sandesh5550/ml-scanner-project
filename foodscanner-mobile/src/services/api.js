@@ -56,6 +56,7 @@ function getExpoHostIp() {
 const envBaseUrl = normalizeBaseUrl(process.env.EXPO_PUBLIC_API_BASE_URL);
 const expoHostIp = getExpoHostIp();
 const expoDerivedUrl = expoHostIp ? `http://${expoHostIp}:${API_PORT}` : null;
+const defaultNativeUrl = expoDerivedUrl || DEFAULT_PUBLIC_URL;
 const defaultWebUrl = typeof window !== 'undefined' && window?.location?.hostname
   ? `http://${window.location.hostname}:${API_PORT}`
   : `http://localhost:${API_PORT}`;
