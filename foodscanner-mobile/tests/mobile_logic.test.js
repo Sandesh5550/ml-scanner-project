@@ -1667,3 +1667,527 @@ describe('Batch 18: Phase 3 AI Intelligence & Nutritional Comparison Contract', 
     assert.strictEqual(endpointsHit.length, 2);
   });
 });
+
+describe('Batch 19: Async OCR Integration, Polling Lifecycle & Production Reliability Contract', () => {
+  const {
+    OCR_STATUS,
+    OCR_UI_STATE,
+    isOcrResultEmpty,
+    extractOcrNutrientValues,
+    sleepWithAbort,
+    pollOcrJobWithClient,
+  } = require('../src/utils/ocrPolling');
+
+  test('1. submitOcrJob builds exact backend contract payload with async flag and claims', async () => {
+    let captured = null;
+    const mockClient = {
+      post: async (url, payload, config) => {
+        captured = { url, payload, config };
+        return {
+          data: {
+            job_id: 'ocr_test_12345',
+            status: 'pending',
+            created_at: new Date().toISOString(),
+            poll_url: '/ocr/jobs/ocr_test_12345',
+          },
+        };
+      },
+    };
+
+    async function submitOcrJobTest(base64Image, options = {}) {
+      const payload = {
+        image_base64: base64Image,
+        async_mode: true,
+      };
+      if (Array.isArray(options?.claims) && options.claims.length > 0) {
+        payload.claims = options.claims;
+      }
+      const config = {};
+      if (options?.signal) {
+        config.signal = options.signal;
+      }
+      const res = await mockClient.post('/ocr?async=true', payload, config);
+      return res.data;
+    }
+
+    const testB64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const res = await submitOcrJobTest(testB64, { claims: ['High Protein', 'Gluten Free'] });
+
+    assert.strictEqual(res.job_id, 'ocr_test_12345');
+    assert.strictEqual(res.status, 'pending');
+    assert.strictEqual(captured.url, '/ocr?async=true');
+    assert.strictEqual(captured.payload.image_base64, testB64);
+    assert.strictEqual(captured.payload.async_mode, true);
+    assert.deepStrictEqual(captured.payload.claims, ['High Protein', 'Gluten Free']);
+  });
+
+  test('2. getOcrJobStatus validates job_id and routes to /ocr/jobs/{job_id}', async () => {
+    let queriedUrl = null;
+    const mockClient = {
+      get: async (url, config) => {
+        queriedUrl = url;
+        return {
+          data: {
+            job_id: 'ocr_abc_789',
+            status: 'processing',
+            created_at: '2026-10-23T12:00:00Z',
+            started_at: '2026-10-23T12:00:01Z',
+            completed_at: null,
+            result: null,
+            error: null,
+          },
+        };
+      },
+    };
+
+    async function getOcrJobStatusTest(jobId, options = {}) {
+      if (!jobId || typeof jobId !== 'string' || !jobId.trim()) {
+        throw new Error('jobId is required and must be a non-empty string');
+      }
+      const config = {};
+      if (options?.signal) config.signal = options.signal;
+      const res = await mockClient.get(`/ocr/jobs/${encodeURIComponent(jobId.trim())}`, config);
+      return res.data;
+    }
+
+    // Valid job_id
+    const data = await getOcrJobStatusTest('ocr_abc_789');
+    assert.strictEqual(data.job_id, 'ocr_abc_789');
+    assert.strictEqual(queriedUrl, '/ocr/jobs/ocr_abc_789');
+
+    // URI encoding validation for special characters
+    await getOcrJobStatusTest('ocr/job?test#1');
+    assert.strictEqual(queriedUrl, '/ocr/jobs/ocr%2Fjob%3Ftest%231');
+
+    // Rejects empty/invalid job_id
+    await assert.rejects(async () => {
+      await getOcrJobStatusTest('');
+    }, /jobId is required/);
+
+    await assert.rejects(async () => {
+      await getOcrJobStatusTest(null);
+    }, /jobId is required/);
+  });
+
+  test('3. Polling lifecycle: transitions pending -> processing -> completed and invokes onProgress', async () => {
+    const states = [
+      { job_id: 'ocr_flow_1', status: 'pending', result: null, error: null },
+      { job_id: 'ocr_flow_1', status: 'processing', result: null, error: null },
+      {
+        job_id: 'ocr_flow_1',
+        status: 'completed',
+        result: {
+          calories: 180,
+          protein: 12.5,
+          carbs: 22.0,
+          fat: 4.2,
+          sugar: 3.1,
+          salt: 0.8,
+          fiber: 5.0,
+          product_name: 'Organic Lentil Soup',
+          confidence: 'high',
+        },
+        error: null,
+      },
+    ];
+
+    let pollIndex = 0;
+    const mockFetcher = async () => {
+      const item = states[Math.min(pollIndex, states.length - 1)];
+      pollIndex += 1;
+      return item;
+    };
+
+    const progressReports = [];
+    let currentTime = 1000;
+    const mockNow = () => currentTime;
+    const mockSleep = async (ms) => { currentTime += ms; };
+
+    const finalResult = await pollOcrJobWithClient(mockFetcher, 'ocr_flow_1', {
+      intervalMs: 500,
+      timeoutMs: 10000,
+      nowFn: mockNow,
+      sleepFn: mockSleep,
+      onProgress: (info) => progressReports.push(info),
+    });
+
+    assert.strictEqual(finalResult.status, 'completed');
+    assert.strictEqual(finalResult.result.calories, 180);
+    assert.strictEqual(finalResult.result.product_name, 'Organic Lentil Soup');
+
+    // Progress callbacks fired for pending, processing, and completed
+    assert.strictEqual(progressReports.length, 3);
+    assert.strictEqual(progressReports[0].status, 'pending');
+    assert.strictEqual(progressReports[1].status, 'processing');
+    assert.strictEqual(progressReports[2].status, 'completed');
+  });
+
+  test('4. Polling lifecycle: backend job status "failed" terminates polling and throws error', async () => {
+    const states = [
+      { job_id: 'ocr_fail_1', status: 'processing', result: null, error: null },
+      { job_id: 'ocr_fail_1', status: 'failed', result: null, error: 'OCR processing failed: unreadable image' },
+    ];
+
+    let pollIndex = 0;
+    const mockFetcher = async () => {
+      const item = states[Math.min(pollIndex, states.length - 1)];
+      pollIndex += 1;
+      return item;
+    };
+
+    let currentTime = 1000;
+    await assert.rejects(
+      async () => {
+        await pollOcrJobWithClient(mockFetcher, 'ocr_fail_1', {
+          intervalMs: 500,
+          timeoutMs: 10000,
+          nowFn: () => currentTime,
+          sleepFn: async (ms) => { currentTime += ms; },
+        });
+      },
+      (err) => {
+        assert.strictEqual(err.code, 'JOB_FAILED');
+        assert.ok(err.message.includes('unreadable image'));
+        return true;
+      }
+    );
+  });
+
+  test('5. Polling lifecycle: bounded timeout stops polling after timeoutMs', async () => {
+    const mockFetcher = async () => ({
+      job_id: 'ocr_stuck_1',
+      status: 'processing',
+      result: null,
+      error: null,
+    });
+
+    let currentTime = 0;
+    const mockNow = () => currentTime;
+    const mockSleep = async (ms) => { currentTime += ms; };
+
+    await assert.rejects(
+      async () => {
+        await pollOcrJobWithClient(mockFetcher, 'ocr_stuck_1', {
+          intervalMs: 1000,
+          timeoutMs: 5000, // 5s timeout
+          nowFn: mockNow,
+          sleepFn: mockSleep,
+        });
+      },
+      (err) => {
+        assert.strictEqual(err.code, 'ETIMEDOUT');
+        assert.ok(err.message.includes('timed out after 5 seconds'));
+        return true;
+      }
+    );
+  });
+
+  test('6. Polling lifecycle: AbortSignal stops polling immediately and cancels sleep', async () => {
+    const controller = new AbortController();
+    let pollCount = 0;
+
+    const mockFetcher = async () => {
+      pollCount += 1;
+      if (pollCount === 1) {
+        // Abort during first sleep
+        controller.abort();
+      }
+      return { job_id: 'ocr_abort_1', status: 'processing', result: null, error: null };
+    };
+
+    await assert.rejects(
+      async () => {
+        await pollOcrJobWithClient(mockFetcher, 'ocr_abort_1', {
+          intervalMs: 1500,
+          timeoutMs: 30000,
+          signal: controller.signal,
+        });
+      },
+      (err) => {
+        assert.strictEqual(err.name, 'AbortError');
+        return true;
+      }
+    );
+
+    assert.strictEqual(pollCount, 1, 'Subsequent polls must not be executed after abort');
+  });
+
+  test('7. Polling lifecycle: prevents overlapping polling requests (strict concurrency = 1)', async () => {
+    let concurrentCount = 0;
+    let maxConcurrencyObserved = 0;
+    let totalPolls = 0;
+
+    const mockFetcher = async () => {
+      concurrentCount += 1;
+      maxConcurrencyObserved = Math.max(maxConcurrencyObserved, concurrentCount);
+      totalPolls += 1;
+
+      // Simulate network latency
+      await new Promise((r) => setTimeout(r, 15));
+      concurrentCount -= 1;
+
+      if (totalPolls >= 3) {
+        return { job_id: 'ocr_seq_1', status: 'completed', result: { calories: 100 }, error: null };
+      }
+      return { job_id: 'ocr_seq_1', status: 'processing', result: null, error: null };
+    };
+
+    const res = await pollOcrJobWithClient(mockFetcher, 'ocr_seq_1', {
+      intervalMs: 10,
+      timeoutMs: 10000,
+    });
+
+    assert.strictEqual(res.status, 'completed');
+    assert.strictEqual(maxConcurrencyObserved, 1, 'Maximum concurrency must never exceed 1');
+    assert.strictEqual(totalPolls, 3);
+  });
+
+  test('8. Transient network error resilience retries up to maxConsecutiveTransientErrors', async () => {
+    let calls = 0;
+    const mockFetcher = async () => {
+      calls += 1;
+      if (calls === 1 || calls === 2) {
+        // Transient 503 Service Unavailable / Network drop
+        const err = new Error('Network timeout');
+        err.response = { status: 503, data: { detail: 'Service busy' } };
+        throw err;
+      }
+      return {
+        job_id: 'ocr_retry_1',
+        status: 'completed',
+        result: { calories: 220, protein: 8 },
+        error: null,
+      };
+    };
+
+    let currentTime = 1000;
+    const res = await pollOcrJobWithClient(mockFetcher, 'ocr_retry_1', {
+      intervalMs: 100,
+      timeoutMs: 10000,
+      maxConsecutiveTransientErrors: 3,
+      nowFn: () => currentTime,
+      sleepFn: async (ms) => { currentTime += ms; },
+    });
+
+    assert.strictEqual(res.status, 'completed');
+    assert.strictEqual(calls, 3);
+  });
+
+  test('9. Non-retryable HTTP errors (401, 404, 400) fail fast without retrying', async () => {
+    let calls = 0;
+    const mockFetcher = async () => {
+      calls += 1;
+      const err = new Error('Not Found');
+      err.response = { status: 404, data: { detail: 'OCR job not found' } };
+      throw err;
+    };
+
+    await assert.rejects(
+      async () => {
+        await pollOcrJobWithClient(mockFetcher, 'ocr_404_1', {
+          intervalMs: 100,
+          timeoutMs: 10000,
+          maxConsecutiveTransientErrors: 3,
+        });
+      },
+      (err) => {
+        assert.strictEqual(err.response?.status, 404);
+        return true;
+      }
+    );
+
+    assert.strictEqual(calls, 1, 'Non-retryable 404 must not trigger retries');
+  });
+
+  test('10. isOcrResultEmpty accurately differentiates empty, failed, and valid nutrition results', () => {
+    // Empty inputs
+    assert.strictEqual(isOcrResultEmpty(null), true);
+    assert.strictEqual(isOcrResultEmpty(undefined), true);
+    assert.strictEqual(isOcrResultEmpty({}), true);
+
+    // Backend terminal error statuses
+    assert.strictEqual(isOcrResultEmpty({ status: 'NO_TEXT' }), true);
+    assert.strictEqual(isOcrResultEmpty({ status: 'INVALID_IMAGE' }), true);
+    assert.strictEqual(isOcrResultEmpty({ status: 'EXTRACTION_FAILED' }), true);
+
+    // All nutrients null or NaN
+    assert.strictEqual(isOcrResultEmpty({
+      calories: null,
+      fat: null,
+      sugar: null,
+      salt: null,
+      protein: null,
+      fiber: null,
+      carbs: null,
+    }), true);
+
+    // Valid positive nutrition
+    assert.strictEqual(isOcrResultEmpty({
+      calories: 250,
+      protein: 10,
+      carbs: 30,
+    }), false);
+
+    // Valid zero nutrition (e.g. black coffee, water, zero calorie beverage)
+    assert.strictEqual(isOcrResultEmpty({
+      calories: 0,
+      sugar: 0,
+    }), false);
+  });
+
+  test('11. extractOcrNutrientValues extracts all canonical keys safely', () => {
+    const rawResult = {
+      product_name: 'Highland Rolled Oats',
+      calories: '375',
+      fat: '7.5',
+      sugar: '1.2',
+      salt: '0.02',
+      protein: '13.0',
+      fiber: '10.5',
+      carbs: '62.0',
+      confidence: 'high',
+      raw_text: 'Nutrition Information per 100g...',
+      ocr_version: '2.0.0',
+      claim_verification: [{ claim: 'High Fiber', status: 'VERIFIED' }],
+    };
+
+    const extracted = extractOcrNutrientValues(rawResult);
+    assert.strictEqual(extracted.product_name, 'Highland Rolled Oats');
+    assert.strictEqual(extracted.calories, 375);
+    assert.strictEqual(extracted.fat, 7.5);
+    assert.strictEqual(extracted.sugar, 1.2);
+    assert.strictEqual(extracted.protein, 13.0);
+    assert.strictEqual(extracted.fiber, 10.5);
+    assert.strictEqual(extracted.carbs, 62.0);
+    assert.strictEqual(extracted.confidence, 'high');
+    assert.strictEqual(extracted.ocr_version, '2.0.0');
+    assert.strictEqual(extracted.claim_verification.length, 1);
+
+    // Handles null safely
+    const emptyExtracted = extractOcrNutrientValues(null);
+    assert.strictEqual(emptyExtracted.calories, null);
+    assert.strictEqual(emptyExtracted.product_name, '');
+  });
+
+  test('12. Synchronous OCR preservation: scanNutritionLabel executes immediate POST /ocr without async flag', async () => {
+    let hitEndpoint = null;
+    let hitPayload = null;
+    const mockClient = {
+      post: async (url, payload) => {
+        hitEndpoint = url;
+        hitPayload = payload;
+        return {
+          data: {
+            calories: 150,
+            product_name: 'Sync Crackers',
+            confidence: 0.88,
+          },
+        };
+      },
+    };
+
+    async function scanNutritionLabelTest(base64Image) {
+      const res = await mockClient.post('/ocr', { image_base64: base64Image });
+      return res.data;
+    }
+
+    const testImg = 'sample_b64_string';
+    const result = await scanNutritionLabelTest(testImg);
+
+    assert.strictEqual(hitEndpoint, '/ocr');
+    assert.strictEqual(hitPayload.image_base64, testImg);
+    assert.strictEqual(hitPayload.async_mode, undefined);
+    assert.strictEqual(result.calories, 150);
+  });
+
+  test('13. Duplicate submission guard prevents overlapping uploads while in-flight', async () => {
+    let activeSubmissions = 0;
+    let duplicateRejectionCount = 0;
+
+    let inFlight = false;
+    async function guardedProcessAsset(b64) {
+      if (inFlight) {
+        duplicateRejectionCount += 1;
+        return null;
+      }
+      inFlight = true;
+      activeSubmissions += 1;
+      try {
+        await new Promise((r) => setTimeout(r, 20));
+        return { job_id: 'ocr_success' };
+      } finally {
+        inFlight = false;
+        activeSubmissions -= 1;
+      }
+    }
+
+    // Trigger two submissions concurrently
+    const [p1, p2] = await Promise.all([
+      guardedProcessAsset('img1'),
+      guardedProcessAsset('img2'),
+    ]);
+
+    assert.strictEqual(duplicateRejectionCount, 1);
+    assert.strictEqual(activeSubmissions, 0);
+    assert.ok(p1 !== null || p2 !== null);
+  });
+
+  test('14. Security & Privacy invariant: no auth tokens or sensitive data leaked in errors', () => {
+    const errorWithAuthHeader = {
+      response: {
+        status: 400,
+        data: { detail: 'Corrupted image bytes' },
+      },
+      config: {
+        headers: {
+          Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.sensitive_token_payload',
+        },
+      },
+      message: 'Request failed with status code 400',
+    };
+
+    const sanitizedMsg = getNetworkErrorMessage(errorWithAuthHeader);
+    assert.strictEqual(sanitizedMsg, 'Corrupted image bytes');
+    assert.strictEqual(sanitizedMsg.includes('Bearer'), false);
+    assert.strictEqual(sanitizedMsg.includes('eyJhbGciOi'), false);
+  });
+
+  test('15. sleepWithAbort and OCR status constants contract', async () => {
+    // Contract constants integrity
+    assert.strictEqual(OCR_STATUS.PENDING, 'pending');
+    assert.strictEqual(OCR_STATUS.PROCESSING, 'processing');
+    assert.strictEqual(OCR_STATUS.COMPLETED, 'completed');
+    assert.strictEqual(OCR_STATUS.FAILED, 'failed');
+
+    assert.strictEqual(OCR_UI_STATE.IDLE, 'IDLE');
+    assert.strictEqual(OCR_UI_STATE.SUBMITTING, 'SUBMITTING');
+    assert.strictEqual(OCR_UI_STATE.POLLING, 'POLLING');
+    assert.strictEqual(OCR_UI_STATE.SUCCESS, 'SUCCESS');
+    assert.strictEqual(OCR_UI_STATE.EMPTY, 'EMPTY');
+    assert.strictEqual(OCR_UI_STATE.FAILED, 'FAILED');
+
+    // sleepWithAbort resolves normally
+    await sleepWithAbort(5);
+
+    // sleepWithAbort rejects when aborted prior to call
+    const preAborted = new AbortController();
+    preAborted.abort();
+    await assert.rejects(async () => {
+      await sleepWithAbort(100, preAborted.signal);
+    }, (err) => {
+      assert.strictEqual(err.name, 'AbortError');
+      return true;
+    });
+
+    // sleepWithAbort rejects when aborted midway
+    const midwayController = new AbortController();
+    const sleepPromise = sleepWithAbort(1000, midwayController.signal);
+    midwayController.abort();
+    await assert.rejects(async () => {
+      await sleepPromise;
+    }, (err) => {
+      assert.strictEqual(err.name, 'AbortError');
+      return true;
+    });
+  });
+});

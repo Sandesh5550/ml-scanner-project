@@ -11,7 +11,24 @@ import {
   resolveBaseUrl,
 } from '../utils/urlResolver';
 
-export { DEFAULT_PUBLIC_URL, API_PORT };
+import {
+  OCR_STATUS,
+  OCR_UI_STATE,
+  isOcrResultEmpty,
+  extractOcrNutrientValues,
+  sleepWithAbort,
+  pollOcrJobWithClient,
+} from '../utils/ocrPolling';
+
+export {
+  DEFAULT_PUBLIC_URL,
+  API_PORT,
+  OCR_STATUS,
+  OCR_UI_STATE,
+  isOcrResultEmpty,
+  extractOcrNutrientValues,
+  sleepWithAbort,
+};
 
 export const BASE_URL = resolveBaseUrl({
   rawEnvUrl: process.env.EXPO_PUBLIC_API_BASE_URL,
@@ -173,6 +190,79 @@ export async function analyzeManualProduct(data) {
   return res.data;
 }
 
+/**
+ * Submit an asynchronous OCR background job to the backend.
+ * @param {string} base64Image - Base64 encoded image string.
+ * @param {Object} [options]
+ * @param {string[]} [options.claims] - Optional nutrition/health claims to verify.
+ * @param {AbortSignal} [options.signal] - Abort signal for unmount/cancellation.
+ * @returns {Promise<{ job_id: string, status: string, created_at: string, poll_url: string }>}
+ */
+export async function submitOcrJob(base64Image, options = {}) {
+  const payload = {
+    image_base64: base64Image,
+    async_mode: true,
+  };
+  if (Array.isArray(options?.claims) && options.claims.length > 0) {
+    payload.claims = options.claims;
+  }
+  const config = {};
+  if (options?.signal) {
+    config.signal = options.signal;
+  }
+  const res = await client.post('/ocr?async=true', payload, config);
+  return res.data;
+}
+
+/**
+ * Retrieve the status and result of an OCR background processing job.
+ * @param {string} jobId - The unique OCR job identifier.
+ * @param {Object} [options]
+ * @param {AbortSignal} [options.signal] - Abort signal for unmount/cancellation.
+ * @returns {Promise<{ job_id: string, status: string, created_at: string, started_at: string|null, completed_at: string|null, result: Object|null, error: string|null }>}
+ */
+export async function getOcrJobStatus(jobId, options = {}) {
+  if (!jobId || typeof jobId !== 'string' || !jobId.trim()) {
+    throw new Error('jobId is required and must be a non-empty string');
+  }
+  const config = {};
+  if (options?.signal) {
+    config.signal = options.signal;
+  }
+  const res = await client.get(`/ocr/jobs/${encodeURIComponent(jobId.trim())}`, config);
+  return res.data;
+}
+
+/**
+ * Poll an OCR job until completion, failure, cancellation, or timeout.
+ * @param {string} jobId
+ * @param {Object} [options]
+ * @returns {Promise<Object>}
+ */
+export async function pollOcrJob(jobId, options = {}) {
+  return pollOcrJobWithClient(getOcrJobStatus, jobId, options);
+}
+
+/**
+ * High-level helper: Submit an asynchronous OCR job and poll until completion.
+ * @param {string} base64Image
+ * @param {Object} [options]
+ * @returns {Promise<Object>} The completed OCR result.
+ */
+export async function scanNutritionLabelAsync(base64Image, options = {}) {
+  const submitRes = await submitOcrJob(base64Image, options);
+  if (!submitRes?.job_id) {
+    throw new Error('No job ID returned from OCR submission');
+  }
+  const pollRes = await pollOcrJob(submitRes.job_id, options);
+  return pollRes.result || pollRes;
+}
+
+/**
+ * Synchronous OCR analysis (preserved for backward compatibility).
+ * @param {string} base64Image
+ * @returns {Promise<Object>}
+ */
 export async function scanNutritionLabel(base64Image) {
   const res = await client.post('/ocr', { image_base64: base64Image });
   return res.data;
