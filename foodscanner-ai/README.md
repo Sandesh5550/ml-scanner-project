@@ -42,7 +42,7 @@ pip install -r requirements.txt
 
 Production migrations are decoupled from application workers to prevent multi-worker concurrency and race conditions:
 
-- **Render Deployments:** Executed once in an isolated pre-deploy container before workers launch via `preDeployCommand: alembic upgrade head` in `render.yaml`.
+- **Render Deployments:** Executed sequentially inside the container entrypoint before Uvicorn launches via `alembic upgrade head && uvicorn ...` in `Dockerfile` (compatible with Render's free tier).
 - **Docker Compose:** Executed once via the dedicated one-shot `migration` service before the `backend` workers start (`condition: service_completed_successfully`).
 - **Local / Manual Execution:** Run migrations once before starting multi-worker Uvicorn:
 

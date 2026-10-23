@@ -483,7 +483,7 @@ def test_postgresql_ci_guard_skips_in_local_dev_when_unconfigured(monkeypatch):
 
 
 def test_render_configuration_has_pre_deploy_migration():
-    """8. Verify render.yaml declares preDeployCommand for safe migration before workers start."""
+    """8. Verify Render free-tier service avoids preDeployCommand and runs migrations via Dockerfile CMD."""
     import yaml
 
     repo_root = BASE_DIR.parent
@@ -497,14 +497,24 @@ def test_render_configuration_has_pre_deploy_migration():
     backend_service = next((s for s in services if s.get("name") == "foodscanner-ai"), None)
     assert backend_service is not None, "foodscanner-ai service not defined in render.yaml"
 
-    # Pre-deploy migration command must be configured to run once before worker instances
-    pre_deploy = backend_service.get("preDeployCommand")
-    assert pre_deploy == "alembic upgrade head", f"Unexpected preDeployCommand: {pre_deploy}"
+    # Render free tier does not support preDeployCommand; ensure it is not present
+    assert "preDeployCommand" not in backend_service, (
+        "preDeployCommand must not be declared on Render free-tier service"
+    )
+
+    # Migrations run sequentially before Uvicorn in the Dockerfile entrypoint CMD
+    dockerfile_path = BASE_DIR / "Dockerfile"
+    assert dockerfile_path.exists(), f"Dockerfile not found at {dockerfile_path}"
+    dockerfile_content = dockerfile_path.read_text(encoding="utf-8")
+    assert "alembic upgrade head && uvicorn" in dockerfile_content, (
+        "Dockerfile CMD must execute 'alembic upgrade head' before starting Uvicorn"
+    )
 
     # Verify DATABASE_URL is wired from foodscanner-db
     env_vars = {item["key"]: item for item in backend_service.get("envVars", [])}
     assert "DATABASE_URL" in env_vars
     assert env_vars["DATABASE_URL"].get("fromDatabase", {}).get("name") == "foodscanner-db"
+
 
 
 def test_docker_compose_has_dedicated_one_shot_migration_service():

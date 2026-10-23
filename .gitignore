@@ -12,3 +12,7 @@ Thumbs.db
 
 # Java / Metro crash logs
 **/hs_err_pid*.log
+
+# Local Python virtual environments
+.venv/
+.venv*/

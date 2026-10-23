@@ -5,7 +5,6 @@ services:
     rootDir: foodscanner-ai
     plan: free
     healthCheckPath: /health
-    preDeployCommand: alembic upgrade head
     envVars:
       - key: SECRET_KEY
         generateValue: true
