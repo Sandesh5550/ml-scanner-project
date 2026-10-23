@@ -247,3 +247,9 @@ node --test tests/
 2. **OCR 2.0:** OCR parses nutrition tables; multi-label packaging bounding boxes and FSSAI license OCR are not yet supported (scheduled for subsequent Phase 2 batches).
 3. **Mobile Compare UI:** While `/compare` and recommendation engines exist in the backend, the mobile client does not yet include a dedicated comparison screen (scheduled for subsequent Phase 2 batches).
 4. **Physical Device Validation:** The mobile app has been validated via Expo dev server, LAN configuration, and automated unit tests. Physical iPhone field testing requires an in-person device on the local network.
+
+---
+
+## Maintenance
+
+Last documentation review: 2026-09-23. Keep this README aligned with the current setup, usage, and repository structure.
