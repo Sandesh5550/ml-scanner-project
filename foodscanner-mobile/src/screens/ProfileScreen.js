@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Platform, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -75,7 +75,7 @@ export default function ProfileScreen({ navigation }) {
       } else {
         setSelectedAllergens([]);
       }
-    } catch (e) {
+    } catch (_e) {
       // ignore
     }
   }, []);

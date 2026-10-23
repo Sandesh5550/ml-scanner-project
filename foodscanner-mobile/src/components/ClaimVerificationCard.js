@@ -123,7 +123,7 @@ export default function ClaimVerificationCard({
       {!hasResults && (
         <View style={styles.unverifiedBox}>
           <Text style={styles.unverifiedText}>
-            Deterministic verification of front-of-pack claims (e.g. "Sugar Free", "High Protein", "Low Sodium") against declared lab data.
+            {'Deterministic verification of front-of-pack claims (e.g. "Sugar Free", "High Protein", "Low Sodium") against declared lab data.'}
           </Text>
           <TouchableOpacity
             style={[styles.verifyBtn, PREMIUM_SHADOWS.sm]}

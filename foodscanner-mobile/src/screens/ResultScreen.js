@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
-import { explainProduct, logFoodItem, scanProduct, analyzeManualProduct, getNetworkErrorMessage } from '../services/api';
+import { logFoodItem, scanProduct, analyzeManualProduct, getNetworkErrorMessage } from '../services/api';
 import ClaimVerificationCard from '../components/ClaimVerificationCard';
 import HealthierAlternativesCard from '../components/HealthierAlternativesCard';
 import ComparisonCard from '../components/ComparisonCard';
@@ -25,16 +25,6 @@ import {
 import { NeoTab } from '../components/neo';
 import { formatNutritionValue } from '../utils/formatters';
 
-function _decisionMeta(decision) {
-  const d = String(decision || '').toUpperCase();
-  if (d === 'SAFE') {
-    return { text: 'SAFE', bg: PREMIUM_COLORS.status.safeBg, fg: PREMIUM_COLORS.status.safe, color: 'green', label: 'RECOMMENDED' };
-  }
-  if (d === 'MODERATE') {
-    return { text: 'MODERATE', bg: PREMIUM_COLORS.status.moderateBg, fg: PREMIUM_COLORS.status.moderate, color: 'amber', label: 'CONSUME IN MODERATION' };
-  }
-  return { text: d || 'AVOID', bg: PREMIUM_COLORS.status.avoidBg, fg: PREMIUM_COLORS.status.avoid, color: 'red', label: 'HIGH RISK NUTRIENTS' };
-}
 
 function _calculateServingNutrition(baseNutrition100g, servingGrams) {
   if (!baseNutrition100g || !servingGrams || servingGrams <= 0) return null;
@@ -59,7 +49,9 @@ export default function ResultScreen({ route, navigation }) {
   const productName = result?.product?.name || result?.product_name || 'Food Product';
   const brand = result?.product?.brand || result?.brand || '';
   const imageUrl = result?.product?.image_url || result?.image_url;
-  const rawNutrition = result?.product?.nutrition || result?.nutrition || {};
+  const rawNutrition = useMemo(() => {
+    return result?.product?.nutrition || result?.nutrition || {};
+  }, [result]);
 
   const ingredientAnalysis = result?.analysis?.ingredient_analysis || result?.ingredient_analysis;
   const additiveAnalysis = result?.analysis?.additive_analysis || result?.additive_analysis;
@@ -107,7 +99,6 @@ export default function ResultScreen({ route, navigation }) {
   const carbsVal = currentNutrition?.carbs ?? 0;
   const sugarVal = currentNutrition?.sugar ?? 0;
   const fatVal = currentNutrition?.fat ?? 0;
-  const fiberVal = currentNutrition?.fiber ?? 0;
   const saltVal = currentNutrition?.salt ?? currentNutrition?.sodium ?? 0;
 
   const handleLogIntake = async () => {
@@ -539,7 +530,7 @@ export default function ResultScreen({ route, navigation }) {
             ) : loggedToday ? (
               <View style={styles.logDiaryContent}>
                 <Text style={styles.logDiaryIcon}>✓</Text>
-                <Text style={styles.logDiaryText}>Logged to Today's Diary</Text>
+                <Text style={styles.logDiaryText}>{"Logged to Today's Diary"}</Text>
               </View>
             ) : (
               <View style={styles.logDiaryContent}>

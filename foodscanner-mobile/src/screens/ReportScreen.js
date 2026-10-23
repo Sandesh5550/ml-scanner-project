@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, TouchableOpacity } from 'react-native';
+import React, { useState, useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 
@@ -141,7 +141,7 @@ export default function ReportScreen() {
         <View style={[styles.dailyHeroCard, PREMIUM_SHADOWS.sm]}>
           <View style={styles.dailyHeroTop}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.dailyHeroTag}>TODAY'S OVERALL SCORE</Text>
+              <Text style={styles.dailyHeroTag}>{"TODAY'S OVERALL SCORE"}</Text>
               <Text style={styles.dailyHeroScore}>{overallScore}<Text style={styles.scoreMax}> /100</Text></Text>
             </View>
             <View style={[styles.ratingPill, { backgroundColor: ratingMeta.bg }]}>

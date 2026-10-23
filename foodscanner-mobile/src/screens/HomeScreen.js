@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Animated,
-  Image,
   Alert,
   Platform,
 } from 'react-native';
@@ -338,7 +337,7 @@ export default function HomeScreen({ navigation }) {
           <View style={styles.header}>
             <View style={{ flex: 1 }}>
               <Text style={styles.greeting}>{greeting}</Text>
-              <Text style={styles.heroTitle}>Let's understand{"\n"}what you eat.</Text>
+              <Text style={styles.heroTitle}>{"Let's understand\nwhat you eat."}</Text>
               <Text style={styles.heroSub}>Scan food. Understand better.</Text>
             </View>
 
@@ -631,7 +630,7 @@ export default function HomeScreen({ navigation }) {
 
           {/* 7. Today's Consumption Diary */}
           <View style={[styles.sectionHeaderRow, { marginTop: 26 }]}>
-            <Text style={styles.sectionTitle}>Today's Intake</Text>
+            <Text style={styles.sectionTitle}>{"Today's Intake"}</Text>
             <Text style={styles.sectionCountText}>{foodsTodayOnly.length} items logged</Text>
           </View>
 
@@ -642,7 +641,7 @@ export default function HomeScreen({ navigation }) {
               </View>
               <Text style={styles.emptyDiaryTitle}>Nothing consumed yet today</Text>
               <Text style={styles.emptyDiarySub}>
-                Scanning a product never logs it automatically. Tap "+ Log to Daily Diary" on any product result to record intake.
+                {'Scanning a product never logs it automatically. Tap "+ Log to Daily Diary" on any product result to record intake.'}
               </Text>
             </View>
           ) : (

@@ -61,6 +61,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
 
+      - name: Validate PostgreSQL Alembic Migrations
+        env:
+          DATABASE_URL: "postgresql://test_user:test_password@localhost:5432/test_foodscanner_db"
+        run: |
+          alembic upgrade head
+          alembic current
+
       - name: Run Backend Pytest Suite
         env:
           SECRET_KEY: "ci-testing-secret-key-foodscanner-ai-pramaan"
@@ -93,9 +100,17 @@ jobs:
         run: |
           npm ci
 
+      - name: Run Mobile Lint (ESLint)
+        run: |
+          npm run lint
+
       - name: Run Mobile Unit Tests
         run: |
           npm test
+
+      - name: Validate Expo Web Export
+        run: |
+          npm run build:web
 
   docker-validation:
     name: Docker Build & Compose Check
@@ -112,3 +127,33 @@ jobs:
       - name: Build Backend Docker Image
         run: |
           docker build -t foodscanner-ai:ci ./foodscanner-ai
+
+      - name: Verify Container Health & Startup
+        run: |
+          trap 'docker rm -f foodscanner-ci-smoke 2>/dev/null || true' EXIT
+          docker run -d --name foodscanner-ci-smoke \
+            -p 8000:8000 \
+            -e PORT=8000 \
+            -e ENVIRONMENT=development \
+            -e SECRET_KEY="ci-testing-container-smoke-secret-key-min-32-chars" \
+            foodscanner-ai:ci
+
+          # Poll /health until ready (up to 30s)
+          for i in $(seq 1 30); do
+            if curl -s -f http://127.0.0.1:8000/health > /dev/null; then
+              echo "Container health check passed on attempt $i!"
+              break
+            fi
+            echo "Waiting for container to become healthy ($i/30)..."
+            sleep 1
+          done
+
+          # Assert health status
+          STATUS=$(curl -s http://127.0.0.1:8000/health)
+          echo "Health response: $STATUS"
+          echo "$STATUS" | grep -q '"status":"running"' || exit 1
+
+      - name: Cleanup Smoke Container
+        if: always()
+        run: |
+          docker rm -f foodscanner-ci-smoke 2>/dev/null || true

@@ -22,14 +22,12 @@ export default function AIChatSection({
   const [query, setQuery] = useState('');
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
 
   // Reset conversation when viewing a new product
   React.useEffect(() => {
     setMessages([]);
     setQuery('');
     setExpanded(false);
-    setError(null);
   }, [barcode, productName]);
 
   const handleSend = async (textToSend) => {
@@ -40,7 +38,6 @@ export default function AIChatSection({
     setMessages((prev) => [...prev, userMsg]);
     setQuery('');
     setLoading(true);
-    setError(null);
     setExpanded(true);
 
     const productContext = {
@@ -63,7 +60,6 @@ export default function AIChatSection({
       setMessages((prev) => [...prev, { role: 'assistant', content: reply }]);
     } catch (e) {
       const fallbackMsg = e?.response?.data?.detail || 'AI assistant is temporarily unavailable. Please try again later.';
-      setError(fallbackMsg);
       setMessages((prev) => [
         ...prev,
         { role: 'assistant', content: fallbackMsg },

@@ -10,9 +10,20 @@ node_modules/
 database.zip
 *.db
 database/*.db
+
+# Large training datasets
+datasets/large_openfoodfacts*.csv
+foodscanner-ai/datasets/large_openfoodfacts*.csv
+foodscanner-ai/datasets/off_india_raw.json
+
+# VCS and testing caches
 .git/
 .github/
 .agents/
 .pytest_cache/
 .coverage
 htmlcov/
+.DS_Store
+Thumbs.db
+reports/
+foodscanner-ai/reports/

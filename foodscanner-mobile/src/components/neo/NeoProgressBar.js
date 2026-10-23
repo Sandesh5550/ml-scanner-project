@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Animated } from 'react-native';
-import { PREMIUM_COLORS, PREMIUM_RADIUS } from '../../theme/premiumTheme';
+import { PREMIUM_COLORS } from '../../theme/premiumTheme';
 
 export default function NeoProgressBar({
   progress = 0, // 0 to 1 or 0 to 100
