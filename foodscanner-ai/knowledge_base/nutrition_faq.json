@@ -1,0 +1,66 @@
+[
+  {
+    "id": "FAQ-SUG-001",
+    "topic": "sugar_vs_added_sugar",
+    "text": "Total sugar encompasses both naturally occurring sugars (such as lactose in milk and fructose in whole fruit) and added sugars (such as sucrose, high-fructose corn syrup, honey, and dextrose added during processing). Added sugars provide empty calories without micronutrients, whereas naturally occurring sugars in whole foods are packaged with fiber, water, and essential nutrients.",
+    "source": "WHO / ICMR-NIN Dietary Guidelines",
+    "source_type": "faq",
+    "version_or_date": "2020"
+  },
+  {
+    "id": "FAQ-SCORE-002",
+    "topic": "pramaan_health_score_calculation",
+    "text": "PRAMAAN computes an objective, deterministic 0 to 100 Health Score starting from a baseline of 100. Penalties are deducted for high sugar (-10 to -35), high salt (-10 to -30), excess fat and saturated fat (-10 to -30), high calories (-5 to -15), and medium/high risk food additives and ingredients (-10 to -25). Bonuses are added for dietary fiber (+8 to +15) and protein (+8 to +15), plus NutriScore adjustments. Classification: SAFE (>= 70), MODERATE (45-69), and AVOID (< 45).",
+    "source": "PRAMAAN Deterministic Health Score Engine",
+    "source_type": "faq",
+    "version_or_date": "2026"
+  },
+  {
+    "id": "FAQ-PROT-003",
+    "topic": "high_protein_unhealthy_paradox",
+    "text": "A product labeled 'High Protein' can still be unhealthy if it also contains excessive amounts of added sugar, saturated fats, or chemical preservatives. For example, some protein bars contain 20g of sugar alongside 10g of protein, diminishing their overall healthfulness.",
+    "source": "ICMR-NIN / Public Health Nutrition",
+    "source_type": "faq",
+    "version_or_date": "2020"
+  },
+  {
+    "id": "FAQ-GOAL-004",
+    "topic": "weight_loss_nutrition",
+    "text": "For healthy weight loss, prioritize foods with low caloric density (under 200 kcal/100g) and high satiety index, driven by dietary fiber (>3g/100g) and lean protein (>8g/100g). Avoid liquid calories and foods with high free sugars and refined carbohydrates that spike blood glucose and hunger.",
+    "source": "WHO / ICMR-NIN Weight Management Principles",
+    "source_type": "faq",
+    "version_or_date": "2020"
+  },
+  {
+    "id": "FAQ-GOAL-005",
+    "topic": "muscle_building_nutrition",
+    "text": "To support muscle protein synthesis and recovery, select foods providing at least 10g to 20g of protein per serving with balanced essential amino acids. Pair with complex carbohydrates to replenish muscle glycogen stores, while keeping trans fats and excessive saturated fats minimal.",
+    "source": "International Society of Sports Nutrition / ICMR-NIN",
+    "source_type": "faq",
+    "version_or_date": "2020"
+  },
+  {
+    "id": "FAQ-NUTRISCORE-006",
+    "topic": "nutriscore_explained",
+    "text": "NutriScore is an internationally recognized front-of-pack 5-color label ranging from Dark Green (A) indicating high nutritional quality, to Red (E) indicating lower nutritional quality. It calculates negative points (energy, sugars, saturated fat, sodium) and positive points (fruits, vegetables, fiber, protein).",
+    "source": "Santé Publique France / European NutriScore Consortium",
+    "source_type": "faq",
+    "version_or_date": "2023"
+  },
+  {
+    "id": "FAQ-ADD-007",
+    "topic": "high_risk_additives",
+    "text": "Certain packaged food additives are classified as moderate or high risk due to epidemiological associations with metabolic disruption, allergic sensitivity, or digestive irritation. Examples include monosodium glutamate (INS 621), artificial intense sweeteners (Aspartame INS 951, Cyclamates INS 952), and artificial colorants like Tartrazine (INS 102).",
+    "source": "FSSAI / Codex Alimentarius Commission",
+    "source_type": "faq",
+    "version_or_date": "2021"
+  },
+  {
+    "id": "FAQ-SOD-008",
+    "topic": "hidden_sodium_in_food",
+    "text": "Over 70% of dietary sodium comes from processed, packaged foods rather than table salt added during cooking. Processed snacks, instant noodles, biscuits, condiments, and cured products often contain high sodium to enhance shelf life and palatability, increasing hypertension risk.",
+    "source": "WHO Cardiovascular Health Guidelines",
+    "source_type": "faq",
+    "version_or_date": "2019"
+  }
+]

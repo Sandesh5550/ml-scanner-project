@@ -4,10 +4,11 @@ CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     barcode TEXT NOT NULL UNIQUE,
     product_name TEXT NOT NULL,
+    brand TEXT,
     nutriscore TEXT,
     ingredients TEXT,
     additives TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS nutrition (
@@ -25,21 +26,33 @@ CREATE TABLE IF NOT EXISTS nutrition (
 
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
     email TEXT NOT NULL UNIQUE,
+    hashed_password TEXT NOT NULL DEFAULT '',
+    age INTEGER,
+    weight REAL,
+    height REAL,
     daily_calorie_limit INTEGER NOT NULL DEFAULT 2000,
     diet_type TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    allergens TEXT,
+    goal_type TEXT,
+    goal_target_days INTEGER DEFAULT 30,
+    goal_started_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS scan_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL DEFAULT 1,
     barcode TEXT NOT NULL,
-    scan_time TEXT NOT NULL DEFAULT (datetime('now')),
+    scan_time TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     result TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
+-- Legacy table: retained for backward compatibility with initial raw SQLite scripts;
+-- not mapped by SQLAlchemy models or managed by Alembic. User dietary parameters
+-- are stored directly on the 'users' table (daily_calorie_limit, diet_type, allergens).
 CREATE TABLE IF NOT EXISTS user_diet_profile (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     max_calories REAL,
@@ -54,7 +67,13 @@ CREATE TABLE IF NOT EXISTS daily_food_log (
     barcode TEXT NOT NULL,
     product_name TEXT NOT NULL,
     calories REAL,
-    consumed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    fat REAL,
+    sugar REAL,
+    salt REAL,
+    protein REAL,
+    fiber REAL,
+    carbs REAL,
+    consumed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
@@ -63,3 +82,19 @@ CREATE INDEX IF NOT EXISTS idx_products_name ON products(product_name);
 CREATE INDEX IF NOT EXISTS idx_scan_history_barcode ON scan_history(barcode);
 CREATE INDEX IF NOT EXISTS idx_nutrition_product_id ON nutrition(product_id);
 CREATE INDEX IF NOT EXISTS idx_daily_food_log_consumed_at ON daily_food_log(consumed_at);
+
+CREATE TABLE IF NOT EXISTS ocr_jobs (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    image_hash TEXT,
+    result_json TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at TEXT,
+    completed_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ocr_jobs_user_id ON ocr_jobs(user_id);
+CREATE INDEX IF NOT EXISTS idx_ocr_jobs_status ON ocr_jobs(status);

@@ -1,0 +1,163 @@
+services:
+  # ============================================================================
+  # 1. Database Migration Runner (One-shot run before backend workers start)
+  # ============================================================================
+  migration:
+    build:
+      context: ./foodscanner-ai
+      dockerfile: Dockerfile
+    image: foodscanner-ai:latest
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/database/foodscanner.db}
+    volumes:
+      - ./foodscanner-ai/database:/app/database
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+    networks:
+      - pramaan-net
+
+  # ============================================================================
+  # 2. FastAPI Backend (PRAMAAN AI Core Engine)
+  # ============================================================================
+  backend:
+    build:
+      context: ./foodscanner-ai
+      dockerfile: Dockerfile
+    image: foodscanner-ai:latest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - ENVIRONMENT=development
+      - SECRET_KEY=${SECRET_KEY:-pramaan-local-dev-secret-key-minimum-32-chars}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/database/foodscanner.db}
+      - FOODSCANNER_OCR_ENGINE=tesseract
+      - AI_PROVIDER=mock
+      - AI_MODEL=gemini-1.5-flash
+      - RATE_LIMIT_ENABLED=true
+    volumes:
+      - ./foodscanner-ai/database:/app/database
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+        required: false
+    networks:
+      - pramaan-net
+
+  # ============================================================================
+  # 3. Optional PostgreSQL Service (Activated with: docker compose --profile postgres up)
+  # ============================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: pramaan-postgres
+    profiles:
+      - postgres
+      - full
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pramaan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pramaan_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-foodscanner_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pramaan} -d ${POSTGRES_DB:-foodscanner_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pramaan-net
+
+  # ============================================================================
+  # 4. Prometheus Monitoring (Activated with: docker compose --profile monitoring up)
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: pramaan-prometheus
+    profiles:
+      - monitoring
+      - full
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 -O- http://localhost:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - pramaan-net
+
+  # ============================================================================
+  # 5. Grafana Dashboards (Activated with: docker compose --profile monitoring up)
+  # ============================================================================
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: pramaan-grafana
+    profiles:
+      - monitoring
+      - full
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/pramaan_overview.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 -O- http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    depends_on:
+      - prometheus
+    networks:
+      - pramaan-net
+
+volumes:
+  postgres_data:
+    name: pramaan_postgres_data
+  prometheus_data:
+    name: pramaan_prometheus_data
+  grafana_data:
+    name: pramaan_grafana_data
+
+networks:
+  pramaan-net:
+    name: pramaan-net
+    driver: bridge

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import requests
+import httpx
 from rapidfuzz import fuzz
 from sqlalchemy.orm import Session
 
@@ -123,8 +123,14 @@ def _search_openfoodfacts(query: str, limit: int = 10) -> list[dict]:
     }
 
     try:
-        resp = requests.get(OPENFOODFACTS_SEARCH_URL, params=params, timeout=10)
-        resp.raise_for_status()
+        resp = httpx.get(
+            OPENFOODFACTS_SEARCH_URL,
+            params=params,
+            timeout=httpx.Timeout(5.0, connect=3.0),
+            headers={"User-Agent": "Pramaan-FoodScanner/1.0 (+https://github.com/pramaan)"},
+        )
+        if resp.status_code != 200:
+            return []
         data = resp.json()
     except Exception:
         return []

@@ -1,0 +1,58 @@
+[
+  {
+    "id": "NUTR-CAL-001",
+    "topic": "calories_energy_balance",
+    "text": "The reference daily energy intake for an average adult is approximately 2000 kcal per day, varying by age, sex, weight, and physical activity level according to WHO and ICMR-NIN guidelines. Caloric deficit leads to weight loss, while caloric surplus leads to weight gain.",
+    "source": "ICMR-NIN / WHO Expert Consultation",
+    "source_type": "guideline",
+    "version_or_date": "2020"
+  },
+  {
+    "id": "NUTR-SUG-002",
+    "topic": "sugars_intake_limits",
+    "text": "WHO guidelines strongly recommend reducing free sugars to less than 10% of total daily energy intake (approximately 50g for a 2000 kcal diet), with a conditional recommendation to reduce below 5% (25g/day) for additional health benefits. Packaged foods with sugar exceeding 15g to 20g per 100g are classified as high sugar.",
+    "source": "WHO Guideline: Sugars intake for adults and children",
+    "source_type": "guideline",
+    "version_or_date": "2015"
+  },
+  {
+    "id": "NUTR-PROT-003",
+    "topic": "protein_daily_requirement",
+    "text": "The Recommended Dietary Allowance (RDA) for dietary protein for healthy Indian adults is 0.83g per kg body weight per day (approximately 54g/day for a standard 65kg adult) according to ICMR-NIN 2020. Higher intakes (1.2 to 2.0g/kg) are beneficial for muscle building, athletic training, and preserving lean mass during caloric deficits.",
+    "source": "ICMR-NIN Nutrient Requirements for Indians",
+    "source_type": "guideline",
+    "version_or_date": "2020"
+  },
+  {
+    "id": "NUTR-FBR-004",
+    "topic": "dietary_fibre_intake",
+    "text": "Adequate daily intake of dietary fibre is recommended at 25g to 30g per day for adults (or 30g per 2000 kcal). Dietary fibre promotes gastrointestinal motility, enhances satiety to aid weight management, slows glucose absorption, and supports a healthy gut microbiome.",
+    "source": "ICMR-NIN / WHO Nutrition Guidance",
+    "source_type": "guideline",
+    "version_or_date": "2020"
+  },
+  {
+    "id": "NUTR-FAT-005",
+    "topic": "fats_and_fatty_acids",
+    "text": "Total fat intake should not exceed 20% to 35% of daily energy intake (44g to 77g on a 2000 kcal diet). Saturated fatty acids should be limited to less than 10% of total energy (under 22g/day), and industrially produced trans-fatty acids should be eliminated (<1% of energy or under 2.2g/day) to prevent cardiovascular disease.",
+    "source": "WHO Healthy Diet Fact Sheet No. 394",
+    "source_type": "guideline",
+    "version_or_date": "2020"
+  },
+  {
+    "id": "NUTR-SOD-006",
+    "topic": "sodium_and_salt_limits",
+    "text": "WHO guidelines recommend consuming less than 2000 mg of sodium per day (equivalent to less than 5g of table salt, about one level teaspoon). In packaged foods, salt content greater than 1.5g per 100g (or sodium > 600mg per 100g) is considered high and contributes to elevated blood pressure and stroke risk.",
+    "source": "WHO Guideline: Sodium intake for adults and children",
+    "source_type": "guideline",
+    "version_or_date": "2012"
+  },
+  {
+    "id": "NUTR-SRV-007",
+    "topic": "serving_sizes_and_basis",
+    "text": "Nutritional values on food labels are typically declared per 100g or 100ml, and optionally per serving. When evaluating health impact, consumers must compare the serving size actually consumed against the standardized 100g declaration to accurately calculate total nutrient intake.",
+    "source": "FSSAI Labeling & Display Regulations",
+    "source_type": "regulation",
+    "version_or_date": "2020"
+  }
+]

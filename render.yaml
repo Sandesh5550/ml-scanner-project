@@ -5,6 +5,7 @@ services:
     rootDir: foodscanner-ai
     plan: free
     healthCheckPath: /health
+    preDeployCommand: alembic upgrade head
     envVars:
       - key: SECRET_KEY
         generateValue: true
@@ -14,6 +15,10 @@ services:
           property: connectionString
       - key: FOODSCANNER_OCR_ENGINE
         value: tesseract
+      - key: ENVIRONMENT
+        value: production
+      - key: ALLOWED_ORIGINS
+        value: https://foodscanner-mobile.onrender.com
   - type: web
     name: foodscanner-mobile
     runtime: static
@@ -22,7 +27,7 @@ services:
     staticPublishPath: dist
     envVars:
       - key: EXPO_PUBLIC_API_BASE_URL
-        sync: false
+        value: https://foodscanner-ai.onrender.com
     routes:
       - type: rewrite
         source: /*

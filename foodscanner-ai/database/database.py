@@ -135,7 +135,7 @@ def get_recent_scans(conn: sqlite3.Connection, limit: int = 20) -> list[dict[str
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT barcode, result, scan_time
+        SELECT id, barcode, result, scan_time
         FROM scan_history
         ORDER BY scan_time DESC
         LIMIT ?
@@ -144,4 +144,4 @@ def get_recent_scans(conn: sqlite3.Connection, limit: int = 20) -> list[dict[str
     )
     rows = cursor.fetchall()
 
-    return [{"barcode": r[0], "result": r[1], "scan_time": r[2]} for r in rows]
+    return [{"id": r[0], "barcode": r[1], "result": r[2], "scan_time": r[3]} for r in rows]

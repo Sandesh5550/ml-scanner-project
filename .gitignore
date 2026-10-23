@@ -9,3 +9,6 @@ __pycache__/
 .env
 .DS_Store
 Thumbs.db
+
+# Java / Metro crash logs
+**/hs_err_pid*.log

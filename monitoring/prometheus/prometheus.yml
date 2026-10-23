@@ -1,0 +1,20 @@
+# ==============================================================================
+# Prometheus Scrape Configuration for FoodScanner AI (PRAMAAN)
+# ==============================================================================
+# Configured to scrape FastAPI application metrics over Docker network (pramaan-net).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  - job_name: "backend"
+    metrics_path: "/metrics"
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets: ["backend:8000"]

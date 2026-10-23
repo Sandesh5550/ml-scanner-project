@@ -5,5 +5,28 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.*
 database.zip
+*.db
+database/*.db
+
+# Exclude large offline training datasets and raw JSON (~28MB)
 datasets/off_india_raw.json
+datasets/large_openfoodfacts.csv
+datasets/large_openfoodfacts_cleaned.csv
+datasets/large_openfoodfacts*.csv
+
+# Exclude testing, coverage and linting caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+tests/
+
+# Exclude VCS, IDE, and reports artifacts
+.git/
+.github/
+.DS_Store
+Thumbs.db
+reports/

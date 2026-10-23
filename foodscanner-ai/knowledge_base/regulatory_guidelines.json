@@ -1,0 +1,98 @@
+[
+  {
+    "id": "REG-FSSAI-001",
+    "topic": "sugar_free_claim",
+    "text": "Under FSSAI Food Safety and Standards (Advertising and Claims) Regulations 2018 (Schedule I), a product may only claim 'Sugar Free' if total sugars do not exceed 0.5 g per 100 g for solid foods or 0.5 g per 100 ml for liquid foods.",
+    "source": "FSSAI Advertising and Claims Regulations, Schedule I",
+    "source_type": "regulation",
+    "version_or_date": "2018"
+  },
+  {
+    "id": "REG-FSSAI-002",
+    "topic": "low_sugar_claim",
+    "text": "Under FSSAI Advertising and Claims Regulations 2018, a claim of 'Low Sugar' or 'Low in Sugar' requires that the product contains not more than 5 g of sugars per 100 g for solid foods, or not more than 2.5 g per 100 ml for liquid foods.",
+    "source": "FSSAI Advertising and Claims Regulations, Schedule I",
+    "source_type": "regulation",
+    "version_or_date": "2018"
+  },
+  {
+    "id": "REG-FSSAI-003",
+    "topic": "no_added_sugar_claim",
+    "text": "FSSAI Regulation 4(5) specifies that 'No Added Sugar' claims are permitted only when no sugars, honey, molasses, or high-sugar fruit juice concentrates have been added during preparation. If sugars are naturally present in the food, the label must state: 'CONTAINS NATURALLY OCCURRING SUGARS'.",
+    "source": "FSSAI Advertising and Claims Regulations, Regulation 4(5)",
+    "source_type": "regulation",
+    "version_or_date": "2018"
+  },
+  {
+    "id": "REG-FSSAI-004",
+    "topic": "low_fat_claim",
+    "text": "Under FSSAI 2018 Schedule I, a product claiming 'Low Fat' must contain not more than 3 g of fat per 100 g for solid foods, or not more than 1.5 g of fat per 100 ml for liquid foods.",
+    "source": "FSSAI Advertising and Claims Regulations, Schedule I",
+    "source_type": "regulation",
+    "version_or_date": "2018"
+  },
+  {
+    "id": "REG-FSSAI-005",
+    "topic": "fat_free_claim",
+    "text": "A 'Fat Free' claim under FSSAI 2018 Schedule I requires that the product contains not more than 0.5 g of fat per 100 g (solids) or per 100 ml (liquids).",
+    "source": "FSSAI Advertising and Claims Regulations, Schedule I",
+    "source_type": "regulation",
+    "version_or_date": "2018"
+  },
+  {
+    "id": "REG-FSSAI-006",
+    "topic": "low_sodium_claim",
+    "text": "According to FSSAI 2018 Schedule I, a 'Low Sodium' claim is permitted only if the food contains not more than 0.12 g (120 mg) of sodium per 100 g, which corresponds to approximately <= 0.3 g salt per 100 g.",
+    "source": "FSSAI Advertising and Claims Regulations, Schedule I",
+    "source_type": "regulation",
+    "version_or_date": "2018"
+  },
+  {
+    "id": "REG-FSSAI-007",
+    "topic": "high_fibre_claim",
+    "text": "Under FSSAI 2018 Schedule I, a food claiming to be 'High Fibre' or 'Rich in Fibre' must contain not less than 6 g of dietary fibre per 100 g, or not less than 3 g per 100 kcal.",
+    "source": "FSSAI Advertising and Claims Regulations, Schedule I",
+    "source_type": "regulation",
+    "version_or_date": "2018"
+  },
+  {
+    "id": "REG-FSSAI-008",
+    "topic": "source_of_fibre_claim",
+    "text": "Under FSSAI 2018 Schedule I, a 'Source of Fibre' claim requires at least 3 g of dietary fibre per 100 g, or at least 1.5 g per 100 kcal.",
+    "source": "FSSAI Advertising and Claims Regulations, Schedule I",
+    "source_type": "regulation",
+    "version_or_date": "2018"
+  },
+  {
+    "id": "REG-FSSAI-009",
+    "topic": "high_protein_claim",
+    "text": "Under FSSAI 2018 Schedule I, a 'High Protein' claim requires that at least 20% of the daily Recommended Dietary Allowance (RDA) of protein is provided per 100 g of food (equivalent to >= 10.8 g protein/100 g based on the ICMR 54 g adult reference).",
+    "source": "FSSAI Advertising and Claims Regulations, Schedule I",
+    "source_type": "regulation",
+    "version_or_date": "2018"
+  },
+  {
+    "id": "REG-FSSAI-010",
+    "topic": "source_of_protein_claim",
+    "text": "A 'Source of Protein' claim under FSSAI 2018 Schedule I requires at least 10% of the adult protein RDA per 100 g (equivalent to >= 5.4 g protein/100 g based on the 54 g RDA).",
+    "source": "FSSAI Advertising and Claims Regulations, Schedule I",
+    "source_type": "regulation",
+    "version_or_date": "2018"
+  },
+  {
+    "id": "REG-FSSAI-011",
+    "topic": "zero_trans_fat_claim",
+    "text": "Under FSSAI 2018 Schedule I, a product may claim 'Trans Fat Free' or 'Zero Trans Fat' only if trans fatty acids are less than 0.2 g per 100 g/100 ml, and saturated fat does not exceed 1.5 g per 100 g (or 0.75 g per 100 ml for liquids).",
+    "source": "FSSAI Advertising and Claims Regulations, Schedule I",
+    "source_type": "regulation",
+    "version_or_date": "2018"
+  },
+  {
+    "id": "REG-FSSAI-012",
+    "topic": "fssai_license_labeling",
+    "text": "Under FSSAI Food Safety and Standards (Labeling and Display) Regulations 2020, every packaged food unit must display the 14-digit FSSAI license number alongside the official FSSAI logo. Detection of a 14-digit number confirms label compliance format but does not verify real-time government registry validity.",
+    "source": "FSSAI Labeling & Display Regulations",
+    "source_type": "regulation",
+    "version_or_date": "2020"
+  }
+]
