@@ -1029,6 +1029,7 @@ def parse_structured_ocr(raw_text: str, base_confidence: float = 0.85) -> Dict[s
     prot_val = nutrients.get("protein_g").value if "protein_g" in nutrients else None
     fib_val = nutrients.get("fibre_g").value if "fibre_g" in nutrients else None
     carb_val = nutrients.get("carbohydrates_g").value if "carbohydrates_g" in nutrients else None
+    sat_val = nutrients.get("saturated_fat_g").value if "saturated_fat_g" in nutrients else None
     serving_size_val = serving_info.size_value
 
     # 8. Overall confidence calculation
@@ -1061,6 +1062,7 @@ def parse_structured_ocr(raw_text: str, base_confidence: float = 0.85) -> Dict[s
         "product_name": "",
         "calories": cal_val,
         "fat": fat_val,
+        "saturated_fat": sat_val,
         "sugar": sug_val,
         "salt": salt_val,
         "protein": prot_val,

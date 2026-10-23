@@ -16,9 +16,10 @@ from datetime import date, datetime, timezone
 from typing import Any
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from database.db_session import get_db
 from database.orm import SessionLocal, init_db as orm_init_db
@@ -368,6 +369,22 @@ def _parse_utc_iso(dt_str: str | None) -> datetime | None:
         return None
 
 
+def _safe_json_dumps(obj: Any) -> str:
+    """Safe JSON serializer for OCR results handling numpy types, decimals, and datetimes."""
+    def _default(o: Any) -> Any:
+        if hasattr(o, "tolist"):
+            return o.tolist()
+        if hasattr(o, "item"):
+            return o.item()
+        if isinstance(o, (datetime, date)):
+            return o.isoformat()
+        if hasattr(o, "__dict__"):
+            return o.__dict__
+        return str(o)
+
+    return json.dumps(obj, default=_default)
+
+
 def recover_stale_ocr_jobs(
     db: Session,
     job_id: str | None = None,
@@ -478,7 +495,7 @@ def execute_ocr_background_task(
             .update(
                 {
                     OCRJob.status: "completed",
-                    OCRJob.result_json: json.dumps(result),
+                    OCRJob.result_json: _safe_json_dumps(result),
                     OCRJob.completed_at: completed_now_str,
                 },
                 synchronize_session=False,
@@ -501,6 +518,7 @@ def execute_ocr_background_task(
     except Exception as exc:
         logger.exception("OCR background task failed for job %s: %s", job_id, exc)
         try:
+            task_db.rollback()
             failed_now_str = datetime.now(timezone.utc).isoformat()
             task_db.query(OCRJob).filter(
                 OCRJob.id == job_id,
@@ -650,12 +668,16 @@ def get_ocr_job_status(
     db: Session = Depends(get_db),
 ) -> dict:
     """Retrieve the status and result of an OCR background processing job."""
+    cleaned_job_id = (job_id or "").strip()
+    if not cleaned_job_id or len(cleaned_job_id) > 64 or not re.match(r"^[a-zA-Z0-9_\-]+$", cleaned_job_id):
+        raise HTTPException(status_code=400, detail="Invalid job ID format")
+
     # Check and recover if this specific job has timed out
-    recover_stale_ocr_jobs(db, job_id=job_id)
+    recover_stale_ocr_jobs(db, job_id=cleaned_job_id)
 
     job = (
         db.query(OCRJob)
-        .filter(OCRJob.id == job_id, OCRJob.user_id == current_user.id)
+        .filter(OCRJob.id == cleaned_job_id, OCRJob.user_id == current_user.id)
         .first()
     )
     if not job:
@@ -917,7 +939,33 @@ def metrics() -> Response:
 
 @app.get("/health", tags=["tracking"])
 def health() -> dict:
+    """Liveness probe: verifies API process is alive and responsive."""
     return {"status": "running"}
+
+
+@app.get("/health/ready", tags=["tracking"])
+@app.get("/ready", tags=["tracking"])
+def readiness_check(db: Session = Depends(get_db)) -> dict:
+    """Readiness probe: verifies database connectivity and pool health."""
+    try:
+        db.execute(text("SELECT 1"))
+        return {"status": "ready", "database": "connected"}
+    except Exception as exc:
+        logger.error("Readiness probe database connection failure: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database connection unavailable",
+        )
+
+
+@app.exception_handler(Exception)
+async def global_unhandled_exception_handler(request: Request, exc: Exception):
+    """Sanitize and standardize unhandled server errors without leaking internals."""
+    logger.exception("Unhandled server exception processing %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An internal server error occurred. Please try again later."},
+    )
 
 
 @app.post("/register", tags=["auth"])

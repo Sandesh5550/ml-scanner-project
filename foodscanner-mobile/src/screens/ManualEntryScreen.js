@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Alert, TouchableOpacity, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -12,6 +12,9 @@ import {
 import { NeoButton, NeoInput } from '../components/neo';
 
 export default function ManualEntryScreen({ navigation, route }) {
+  const isMountedRef = useRef(true);
+  const abortControllerRef = useRef(null);
+
   const [productName, setProductName] = useState('');
   const [calories, setCalories] = useState('');
   const [protein, setProtein] = useState('');
@@ -25,6 +28,18 @@ export default function ManualEntryScreen({ navigation, route }) {
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
   const [apiError, setApiError] = useState(null);
+
+  // Unmount safety: abort in-flight analysis requests
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+    };
+  }, []);
 
   // Prefill or reset state on route parameter changes
   useEffect(() => {
@@ -97,8 +112,24 @@ export default function ManualEntryScreen({ navigation, route }) {
     setLoading(true);
 
     try {
-      const payload = validation.values;
-      const analyzed = await analyzeManualProduct(payload);
+      const payload = {
+        ...validation.values,
+      };
+      if (route?.params?.ingredients) {
+        payload.ingredients = route.params.ingredients;
+      } else if (route?.params?.ocr?.ingredients?.raw_text) {
+        payload.ingredients = route.params.ocr.ingredients.raw_text;
+      }
+
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
+      const analyzed = await analyzeManualProduct(payload, { signal: abortController.signal });
+
+      if (!isMountedRef.current) return;
 
       // Construct canonical ResultScreen state
       const result = {
@@ -129,13 +160,19 @@ export default function ManualEntryScreen({ navigation, route }) {
 
       navigation.navigate('Result', { result, timestamp: Date.now() });
     } catch (e) {
+      if (e?.name === 'AbortError' || e?.name === 'CanceledError') {
+        return;
+      }
+      if (!isMountedRef.current) return;
       const msg = getNetworkErrorMessage(e) || 'Manual nutrition analysis failed. Please try again.';
       setApiError(msg);
       if (Platform.OS !== 'web') {
         Alert.alert('Analysis Notice', String(msg));
       }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
   };
 

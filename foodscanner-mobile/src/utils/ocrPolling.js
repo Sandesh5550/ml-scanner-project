@@ -35,7 +35,7 @@ export function isOcrResultEmpty(result) {
     return true;
   }
 
-  const nutrientKeys = ['calories', 'fat', 'sugar', 'salt', 'protein', 'fiber', 'carbs'];
+  const nutrientKeys = ['calories', 'fat', 'saturated_fat', 'sugar', 'salt', 'protein', 'fiber', 'carbs'];
   const hasAtLeastOneNutrient = nutrientKeys.some((k) => {
     const val = result[k];
     return val !== null && val !== undefined && !Number.isNaN(Number(val));
@@ -55,6 +55,7 @@ export function extractOcrNutrientValues(result) {
       product_name: '',
       calories: null,
       fat: null,
+      saturated_fat: null,
       sugar: null,
       salt: null,
       protein: null,
@@ -67,10 +68,15 @@ export function extractOcrNutrientValues(result) {
     };
   }
 
+  const satFatVal = result.saturated_fat != null
+    ? result.saturated_fat
+    : (result.nutrition?.saturated_fat_g?.value != null ? result.nutrition.saturated_fat_g.value : null);
+
   return {
     product_name: result.product_name || '',
     calories: result.calories != null ? Number(result.calories) : null,
     fat: result.fat != null ? Number(result.fat) : null,
+    saturated_fat: satFatVal != null ? Number(satFatVal) : null,
     sugar: result.sugar != null ? Number(result.sugar) : null,
     salt: result.salt != null ? Number(result.salt) : null,
     protein: result.protein != null ? Number(result.protein) : null,

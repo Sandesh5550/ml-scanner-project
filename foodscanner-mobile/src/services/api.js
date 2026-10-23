@@ -185,8 +185,12 @@ export async function explainProduct(barcode) {
   return res.data;
 }
 
-export async function analyzeManualProduct(data) {
-  const res = await client.post('/analyze', data);
+export async function analyzeManualProduct(data, options = {}) {
+  const config = {};
+  if (options?.signal) {
+    config.signal = options.signal;
+  }
+  const res = await client.post('/analyze', data, config);
   return res.data;
 }
 

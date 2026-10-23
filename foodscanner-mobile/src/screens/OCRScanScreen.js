@@ -84,12 +84,17 @@ export default function OCRScanScreen({ navigation, route }) {
   };
 
   const goManual = (prefill) => {
+    const satFat = prefill?.saturated_fat != null
+      ? prefill.saturated_fat
+      : (prefill?.nutrition?.saturated_fat_g?.value != null ? prefill.nutrition.saturated_fat_g.value : null);
+
     navigation.navigate('ManualEntry', {
       productName: prefill?.product_name || prefillName || '',
       calories: prefill?.calories != null ? formatNutritionValue(prefill.calories, '') : null,
       nutrition: prefill ? {
         calories: prefill.calories != null ? formatNutritionValue(prefill.calories, '') : null,
         fat: prefill.fat != null ? formatNutritionValue(prefill.fat, '') : null,
+        saturated_fat: satFat != null ? formatNutritionValue(satFat, '') : null,
         sugar: prefill.sugar != null ? formatNutritionValue(prefill.sugar, '') : null,
         salt: prefill.salt != null ? formatNutritionValue(prefill.salt, '') : null,
         protein: prefill.protein != null ? formatNutritionValue(prefill.protein, '') : null,
@@ -97,6 +102,7 @@ export default function OCRScanScreen({ navigation, route }) {
         carbs: prefill.carbs != null ? formatNutritionValue(prefill.carbs, '') : null,
       } : null,
       ocr: prefill || null,
+      ingredients: prefill?.ingredients?.raw_text || null,
     });
   };
 

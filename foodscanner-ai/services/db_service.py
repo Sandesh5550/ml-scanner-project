@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy import Date, and_, cast, func, select
@@ -12,7 +12,7 @@ from database.models import FoodLog, Nutrition, Product, ScanHistory, User
 
 
 def _utc_now_str() -> str:
-    return datetime.utcnow().isoformat(sep=" ", timespec="seconds")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _local_now_str() -> str:

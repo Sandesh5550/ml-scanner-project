@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -362,14 +362,23 @@ export default function ScanScreen({ navigation }) {
                 <Text style={styles.notFoundTitle}>Barcode not found</Text>
               </View>
               <Text style={styles.notFoundSub}>
-                Try typing the product brand/name below or enter nutrition facts manually.
+                Try typing the product brand/name below, scanning the nutrition label directly, or entering facts manually.
               </Text>
-              <TouchableOpacity
-                style={styles.manualEntryBtn}
-                onPress={() => navigation.navigate('ManualEntry', { productName: productName.trim() || '' })}
-              >
-                <Text style={styles.manualEntryBtnText}>Enter Nutrition Manually →</Text>
-              </TouchableOpacity>
+              <View style={styles.notFoundActionRow}>
+                <TouchableOpacity
+                  style={[styles.manualEntryBtn, styles.ocrActionBtn]}
+                  onPress={() => navigation.navigate('OCRScan', { productName: productName.trim() || '' })}
+                >
+                  <Ionicons name="camera-outline" size={14} color={PREMIUM_COLORS.primaryDark} style={{ marginRight: 4 }} />
+                  <Text style={styles.ocrActionBtnText}>Scan Label (OCR)</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.manualEntryBtn}
+                  onPress={() => navigation.navigate('ManualEntry', { productName: productName.trim() || '' })}
+                >
+                  <Text style={styles.manualEntryBtnText}>Manual Entry →</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           ) : null}
 
@@ -742,6 +751,24 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     color: PREMIUM_COLORS.ink,
+  },
+  notFoundActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  ocrActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: PREMIUM_COLORS.primaryLight,
+    borderWidth: 1,
+    borderColor: PREMIUM_COLORS.border,
+  },
+  ocrActionBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: PREMIUM_COLORS.primaryDark,
   },
 
   // Chips & Benchmarks

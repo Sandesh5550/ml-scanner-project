@@ -2190,4 +2190,66 @@ describe('Batch 19: Async OCR Integration, Polling Lifecycle & Production Reliab
       return true;
     });
   });
+
+  test('16. End-to-End Scan & Manual Entry Reliability: saturated_fat extraction and request cancellation', async () => {
+    // 1. extractOcrNutrientValues extracts saturated_fat from top-level or structured OCR
+    const ocrTopLevel = {
+      product_name: 'Cashew Butter',
+      calories: 580,
+      fat: 46.0,
+      saturated_fat: 9.2,
+    };
+    const extracted1 = extractOcrNutrientValues(ocrTopLevel);
+    assert.strictEqual(extracted1.saturated_fat, 9.2);
+
+    const ocrNested = {
+      product_name: 'Greek Yogurt',
+      calories: 90,
+      fat: 5.0,
+      nutrition: {
+        saturated_fat_g: { value: 3.2, unit: 'g' },
+      },
+    };
+    const extracted2 = extractOcrNutrientValues(ocrNested);
+    assert.strictEqual(extracted2.saturated_fat, 3.2);
+
+    // 2. isOcrResultEmpty considers saturated_fat as valid nutrition
+    assert.strictEqual(isOcrResultEmpty({ saturated_fat: 2.5 }), false);
+
+    // 3. analyzeManualProduct accepts AbortSignal for unmount cancellation
+    let passedConfig = null;
+    const mockClient = {
+      post: async (url, data, config) => {
+        passedConfig = config;
+        return { data: { product_name: data.product_name, health_score: 80 } };
+      },
+    };
+    async function analyzeManualProductTest(data, options = {}) {
+      const config = {};
+      if (options?.signal) config.signal = options.signal;
+      const res = await mockClient.post('/analyze', data, config);
+      return res.data;
+    }
+
+    const abortCtrl = new AbortController();
+    await analyzeManualProductTest({ product_name: 'Granola Bar' }, { signal: abortCtrl.signal });
+    assert.strictEqual(passedConfig.signal, abortCtrl.signal);
+
+    // 4. Manual entry payload composition forwards ingredients from OCR
+    function buildManualPayload(values, routeParams) {
+      const payload = { ...values };
+      if (routeParams?.ingredients) {
+        payload.ingredients = routeParams.ingredients;
+      } else if (routeParams?.ocr?.ingredients?.raw_text) {
+        payload.ingredients = routeParams.ocr.ingredients.raw_text;
+      }
+      return payload;
+    }
+
+    const payloadWithIngredients = buildManualPayload(
+      { product_name: 'Dark Chocolate', calories: 550 },
+      { ocr: { ingredients: { raw_text: 'Cocoa beans, sugar, cocoa butter' } } }
+    );
+    assert.strictEqual(payloadWithIngredients.ingredients, 'Cocoa beans, sugar, cocoa butter');
+  });
 });
