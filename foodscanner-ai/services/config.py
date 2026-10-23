@@ -52,20 +52,43 @@ def load_environment(dotenv_path: Optional[Path | str] = None, override: bool = 
     return None
 
 
+INSECURE_DEV_KEYS = {
+    "pramaan-local-dev-secret-key-minimum-32-chars",
+    "dev-insecure-secret-key",
+    "changeme",
+    "secret",
+    "password",
+    "12345678",
+}
+
+
 def get_secret_key() -> str:
     """Retrieve the configured SECRET_KEY.
     
-    Raises RuntimeError if SECRET_KEY is not configured.
+    Raises RuntimeError if SECRET_KEY is not configured or if insecure auth
+    or placeholder keys are improperly attempted in a production environment.
     """
     secret = os.environ.get("SECRET_KEY")
+    env = (os.getenv("ENVIRONMENT") or os.getenv("APP_ENV") or os.getenv("ENV") or "").strip().lower()
+    is_prod = env in {"production", "prod"}
+
     if not secret:
         # Check if insecure dev auth is explicitly opted into
         allow_insecure = str(os.environ.get("ALLOW_INSECURE_DEV_AUTH") or "").strip().lower() in {"1", "true", "yes"}
         if allow_insecure:
+            if is_prod:
+                raise RuntimeError("ALLOW_INSECURE_DEV_AUTH is strictly forbidden in production environments.")
             return "dev-insecure-secret-key"
         raise RuntimeError(
             "SECRET_KEY is not configured. Create foodscanner-ai/.env from .env.example and set SECRET_KEY."
         )
+
+    if is_prod:
+        if secret.strip().lower() in INSECURE_DEV_KEYS:
+            raise RuntimeError("SECRET_KEY cannot use an insecure development placeholder in production.")
+        if len(secret.strip()) < 32:
+            raise RuntimeError("SECRET_KEY must be at least 32 characters long for production security.")
+
     return secret
 
 
@@ -73,6 +96,10 @@ def validate_runtime_config(raise_error: bool = True) -> Dict[str, Any]:
     """Validate critical runtime configuration at startup.
     
     Ensures SECRET_KEY is set and environment is ready.
+    In production environments (ENVIRONMENT=production/prod):
+      - Rejects ALLOW_INSECURE_DEV_AUTH
+      - Rejects default development placeholder keys
+      - Requires SECRET_KEY to have at least 32 characters
     Returns a dictionary of validated configuration with redacted secrets.
     """
     # Attempt to load .env if SECRET_KEY is not yet in environment
@@ -82,11 +109,23 @@ def validate_runtime_config(raise_error: bool = True) -> Dict[str, Any]:
     errors = []
     secret = os.environ.get("SECRET_KEY")
     allow_insecure = str(os.environ.get("ALLOW_INSECURE_DEV_AUTH") or "").strip().lower() in {"1", "true", "yes"}
+    env = (os.getenv("ENVIRONMENT") or os.getenv("APP_ENV") or os.getenv("ENV") or "").strip().lower()
+    is_prod = env in {"production", "prod"}
+
+    if is_prod and allow_insecure:
+        errors.append("ALLOW_INSECURE_DEV_AUTH is strictly forbidden in production environments.")
 
     if not secret and not allow_insecure:
         errors.append(
             "SECRET_KEY is not configured. Create foodscanner-ai/.env from .env.example and set SECRET_KEY."
         )
+
+    # Production-specific cryptographic key validation
+    if is_prod and secret:
+        if secret.strip().lower() in INSECURE_DEV_KEYS:
+            errors.append("SECRET_KEY cannot use an insecure development placeholder in production.")
+        elif len(secret.strip()) < 32:
+            errors.append("SECRET_KEY must be at least 32 characters long for production security.")
 
     raw_db_url = os.environ.get("DATABASE_URL")
     if raw_db_url:
@@ -105,6 +144,7 @@ def validate_runtime_config(raise_error: bool = True) -> Dict[str, Any]:
     return {
         "valid": len(errors) == 0,
         "errors": errors,
+        "environment": env or "development",
         "secret_key_set": bool(secret or allow_insecure),
         "database_url": safe_db_url,
         "ai_provider": ai_provider,

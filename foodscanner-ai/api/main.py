@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, select, text
 
 from database.db_session import get_db
-from database.orm import SessionLocal, init_db as orm_init_db
+from database.orm import SessionLocal, engine, init_db as orm_init_db
 from database.models import FoodLog, OCRJob, ScanHistory, User
 from services.barcode_lookup import lookup_product
 from services.product_search import search_products
@@ -53,6 +53,7 @@ from services.rate_limiter import enforce_rate_limit
 from services.metrics import (
     get_metrics_exposition,
     normalize_metric_endpoint,
+    record_database_status,
     record_http_request,
     record_ocr_confidence,
     record_ocr_job_created,
@@ -91,18 +92,28 @@ def _get_allowed_origins() -> list[str]:
 async def lifespan(app: FastAPI):
     # Validate required runtime configuration early before accepting requests
     validate_runtime_config(raise_error=True)
-    orm_init_db()
+
+    # Initial database connectivity verification and schema readiness
+    try:
+        orm_init_db()
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        record_database_status(True)
+    except Exception as exc:
+        record_database_status(False)
+        logger.error("Initial database connection/initialization check failed during startup: %s", exc)
 
     # Startup sweep: recover any stranded jobs from previous process restarts
-    startup_db = SessionLocal()
     try:
-        reaped_count = recover_stale_ocr_jobs(startup_db)
-        if reaped_count > 0:
-            logger.info("Startup sweep recovered %d stale OCR jobs.", reaped_count)
+        startup_db = SessionLocal()
+        try:
+            reaped_count = recover_stale_ocr_jobs(startup_db)
+            if reaped_count > 0:
+                logger.info("Startup sweep recovered %d stale OCR jobs.", reaped_count)
+        finally:
+            startup_db.close()
     except Exception as exc:
         logger.warning("Startup stale OCR job recovery warning: %s", exc)
-    finally:
-        startup_db.close()
 
     print("FoodScanner API running. For Expo Go, start uvicorn with --host 0.0.0.0 and open http://<your-lan-ip>:8000/health")
     yield
@@ -434,6 +445,7 @@ def recover_stale_ocr_jobs(
     )
     db.commit()
     if rows_updated > 0:
+        logger.warning("Reaped %d stale OCR job(s) exceeding timeout: %s", rows_updated, stale_ids)
         record_ocr_stale_reaped(rows_updated)
     return rows_updated
 
@@ -533,8 +545,8 @@ def execute_ocr_background_task(
             )
             task_db.commit()
             record_ocr_job_status("failed")
-        except Exception:
-            pass
+        except Exception as db_exc:
+            logger.error("Failed to update status to failed for OCR job %s: %s", job_id, db_exc)
     finally:
         try:
             del image_bytes
@@ -602,6 +614,7 @@ def ocr_nutrition_label(
         db.add(job)
         db.commit()
         record_ocr_job_created("async")
+        logger.info("Enqueued async OCR job %s for user_id=%s", job_id, current_user.id)
 
         background_tasks.add_task(
             execute_ocr_background_task,
@@ -633,9 +646,10 @@ def ocr_nutrition_label(
             conf = result.get("confidence") or result.get("nutrition_confidence")
             if conf:
                 record_ocr_confidence(conf)
-    except Exception:
+    except Exception as exc:
         duration_sec = time.perf_counter() - sync_start
         record_ocr_job_status("failed", duration_seconds=duration_sec)
+        logger.warning("Synchronous OCR processing failed for user_id=%s: %s", current_user.id, exc)
         raise
 
     # Optional Batch 5 Claim Verification integration if claims are passed
@@ -932,7 +946,12 @@ def analyze(
 
 @app.get("/metrics", tags=["tracking"])
 def metrics() -> Response:
-    """Prometheus metrics exposition endpoint."""
+    """Prometheus metrics exposition endpoint.
+
+    Serves metrics directly from in-memory collectors without synchronous
+    database connection overhead so that scraping remains responsive and reliable
+    even during database connection drops or pool exhaustion.
+    """
     payload, content_type = get_metrics_exposition()
     return Response(content=payload, media_type=content_type)
 
@@ -949,8 +968,10 @@ def readiness_check(db: Session = Depends(get_db)) -> dict:
     """Readiness probe: verifies database connectivity and pool health."""
     try:
         db.execute(text("SELECT 1"))
+        record_database_status(True)
         return {"status": "ready", "database": "connected"}
     except Exception as exc:
+        record_database_status(False)
         logger.error("Readiness probe database connection failure: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1172,8 +1193,8 @@ def scan(
             diet_type=current_user.diet_type,
         )
     except Exception as e:
-        logging.error(f"Scan error for barcode {barcode}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Scan error: {str(e)}")
+        logger.exception("Scan error for barcode %s: %s", barcode, e)
+        raise HTTPException(status_code=500, detail="Failed to process product scan. Please try again.")
     
     if result is None:
         raise HTTPException(status_code=404, detail="product not found")

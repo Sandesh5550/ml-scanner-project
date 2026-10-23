@@ -9,6 +9,7 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
     Counter,
+    Gauge,
     Histogram,
     generate_latest,
 )
@@ -78,6 +79,13 @@ RATE_LIMIT_EXCEEDED_TOTAL = Counter(
     registry=METRICS_REGISTRY,
 )
 
+# 4. Infrastructure & Database Observability Metrics
+DATABASE_CONNECTED = Gauge(
+    "database_connected",
+    "Database connectivity status (1 for connected/healthy, 0 for disconnected/unhealthy)",
+    registry=METRICS_REGISTRY,
+)
+
 
 def init_metrics() -> None:
     """Pre-initialize known, bounded label combinations to 0.0.
@@ -86,6 +94,9 @@ def init_metrics() -> None:
     so that metrics exposition and Prometheus TSDB track the series from startup,
     preventing missing series / empty vector queries prior to the first event.
     """
+    # Initialize to 0.0 (unconnected) until verified by runtime connection check
+    DATABASE_CONNECTED.set(0.0)
+
     for mode in ("sync", "async"):
         OCR_JOBS_TOTAL.labels(mode=mode)
 
@@ -252,6 +263,14 @@ def record_rate_limit_exceeded(endpoint: str) -> None:
         RATE_LIMIT_EXCEEDED_TOTAL.labels(endpoint=safe_endpoint).inc()
     except Exception as exc:
         logger.debug("Error recording rate limit metric: %s", exc)
+
+
+def record_database_status(is_connected: bool) -> None:
+    """Record database connectivity status gauge (1.0 for connected, 0.0 for disconnected)."""
+    try:
+        DATABASE_CONNECTED.set(1.0 if is_connected else 0.0)
+    except Exception as exc:
+        logger.debug("Error recording database status metric: %s", exc)
 
 
 def get_metrics_exposition() -> Tuple[bytes, str]:
