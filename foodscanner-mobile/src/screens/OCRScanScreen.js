@@ -107,7 +107,15 @@ export default function OCRScanScreen({ navigation, route }) {
   };
 
   const processAsset = async (asset) => {
-    if (!asset?.base64) {
+    let base64Data = asset?.base64;
+    if (!base64Data && typeof asset?.uri === 'string' && asset.uri.startsWith('data:')) {
+      const parts = asset.uri.split(',');
+      if (parts.length > 1) {
+        base64Data = parts[1];
+      }
+    }
+
+    if (!base64Data) {
       Alert.alert('Image Error', 'Could not read image data. Please try again.');
       goManual(null);
       return;
@@ -115,7 +123,7 @@ export default function OCRScanScreen({ navigation, route }) {
 
     if (inFlightRef.current) return;
     inFlightRef.current = true;
-    lastAssetRef.current = asset;
+    lastAssetRef.current = { ...asset, base64: base64Data };
 
     // Abort any prior in-flight poll
     if (abortControllerRef.current) {
@@ -131,7 +139,7 @@ export default function OCRScanScreen({ navigation, route }) {
     if (isSyncMode) {
       setOcrState(OCR_UI_STATE.SUBMITTING);
       try {
-        const res = await scanNutritionLabel(asset.base64);
+        const res = await scanNutritionLabel(base64Data);
         if (!isMountedRef.current) return;
         if (isOcrResultEmpty(res)) {
           setOcrResult(res || null);
@@ -155,7 +163,7 @@ export default function OCRScanScreen({ navigation, route }) {
     setOcrState(OCR_UI_STATE.SUBMITTING);
 
     try {
-      const submitRes = await submitOcrJob(asset.base64, {
+      const submitRes = await submitOcrJob(base64Data, {
         signal: abortController.signal,
         claims: route?.params?.claims || null,
       });
