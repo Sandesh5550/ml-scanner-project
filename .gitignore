@@ -1,14 +1,28 @@
 node_modules/
 .expo/
 .vscode/
-.venv/
-venv/
-ENV/
 __pycache__/
 *.py[cod]
 .env
 .DS_Store
 Thumbs.db
+._*
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
 
 # Java / Metro crash logs
 **/hs_err_pid*.log
+
+# Local Python virtual environments
+.venv/
+.venv*/
+venv/
+ENV/
