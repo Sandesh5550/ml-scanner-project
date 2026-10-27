@@ -20,6 +20,55 @@ _OCR_PARSER_VERSION = "2.0.0"
 _OCR_CACHE: Dict[str, Dict[str, Any]] = {}
 _OCR_CACHE_MAX = 64
 _EASYOCR_READER = None
+_CONFIGURED_TESSERACT_CMD: Optional[str] = None
+
+
+def configure_tesseract_path() -> Optional[str]:
+    """Auto-detect and configure pytesseract binary path across platforms."""
+    global _CONFIGURED_TESSERACT_CMD
+
+    import shutil
+    try:
+        import pytesseract
+    except ImportError:
+        return None
+
+    # 1. Explicit env var override
+    env_cmd = os.getenv("TESSERACT_CMD")
+    if env_cmd and os.path.isfile(env_cmd) and (os.name == "nt" or os.access(env_cmd, os.X_OK)):
+        pytesseract.pytesseract.tesseract_cmd = env_cmd
+        _CONFIGURED_TESSERACT_CMD = env_cmd
+        return env_cmd
+
+    # 2. Return cached command if already resolved
+    if _CONFIGURED_TESSERACT_CMD is not None:
+        return _CONFIGURED_TESSERACT_CMD
+
+    # 3. PATH resolution via shutil.which
+    which_cmd = shutil.which("tesseract")
+    if which_cmd:
+        pytesseract.pytesseract.tesseract_cmd = which_cmd
+        _CONFIGURED_TESSERACT_CMD = which_cmd
+        return which_cmd
+
+    # 4. Standard fallback locations across macOS, Linux, Windows
+    candidates = [
+        "/opt/homebrew/bin/tesseract",
+        "/usr/local/bin/tesseract",
+        "/usr/bin/tesseract",
+        "/bin/tesseract",
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate) and (os.name == "nt" or os.access(candidate, os.X_OK)):
+            pytesseract.pytesseract.tesseract_cmd = candidate
+            _CONFIGURED_TESSERACT_CMD = candidate
+            return candidate
+
+    fallback = getattr(pytesseract.pytesseract, "tesseract_cmd", "tesseract")
+    _CONFIGURED_TESSERACT_CMD = fallback
+    return fallback
 
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB maximum decoded image payload
 MAX_BASE64_CHAR_LIMIT = 16 * 1024 * 1024  # ~16 MB Base64 string limit
@@ -325,27 +374,56 @@ def run_ocr_engine(image_bytes: bytes) -> Tuple[str, float]:
 
     # Fallback to Tesseract
     try:
-        from PIL import Image, ImageOps
+        from PIL import Image, ImageOps, ImageStat
         import pytesseract
 
-        img = Image.open(io.BytesIO(image_bytes))
-        img = ImageOps.exif_transpose(img)
-        img = img.convert("L")
-        img = ImageOps.autocontrast(img)
-        img = img.resize((img.size[0] * 2, img.size[1] * 2))
-        img = img.point(lambda p: 255 if p > 160 else 0)
+        configure_tesseract_path()
 
-        # PyTesseract data for confidence
-        try:
-            data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-            confs = [float(c) for c in data.get("conf", []) if str(c).isdigit() and float(c) > 0]
-            avg_conf = (sum(confs) / len(confs) / 100.0) if confs else 0.65
-        except Exception:
-            avg_conf = 0.65
+        prep_img, _ = OCRPreprocessor.preprocess(image_bytes)
+        if prep_img is None:
+            raw_img = Image.open(io.BytesIO(image_bytes))
+            prep_img = ImageOps.exif_transpose(raw_img)
 
-        text = pytesseract.image_to_string(img, config="--oem 3 --psm 6")
+        # Base grayscale with autocontrast
+        gray = ImageOps.autocontrast(prep_img.convert("L"))
+
+        # Inspect mean luminance to detect dark packaging (white text on dark background)
+        stat = ImageStat.Stat(gray)
+        is_dark_bg = (stat.mean[0] < 120) if stat.mean else False
+        primary_img = ImageOps.invert(gray) if is_dark_bg else gray
+
+        def _calc_conf(target_img: Any) -> float:
+            try:
+                data = pytesseract.image_to_data(target_img, output_type=pytesseract.Output.DICT)
+                confs = [float(c) for c in data.get("conf", []) if str(c).isdigit() and float(c) > 0]
+                return (sum(confs) / len(confs) / 100.0) if confs else 0.65
+            except Exception:
+                return 0.65
+
+        avg_conf = _calc_conf(primary_img)
+        text = pytesseract.image_to_string(primary_img, config="--oem 3 --psm 6")
         if not text.strip():
-            text = pytesseract.image_to_string(img, config="--oem 3 --psm 4")
+            text = pytesseract.image_to_string(primary_img, config="--oem 3 --psm 4")
+
+        # Fallback pass 1: Invert if text is too short or empty
+        if len(text.strip()) < 15:
+            alt_img = gray if is_dark_bg else ImageOps.invert(gray)
+            alt_text = pytesseract.image_to_string(alt_img, config="--oem 3 --psm 6")
+            if not alt_text.strip():
+                alt_text = pytesseract.image_to_string(alt_img, config="--oem 3 --psm 4")
+            if len(alt_text.strip()) > len(text.strip()):
+                text = alt_text
+                avg_conf = _calc_conf(alt_img)
+
+        # Fallback pass 2: Try binarization if still too short
+        if len(text.strip()) < 15:
+            bin_img = gray.point(lambda p: 255 if p > 160 else 0)
+            bin_text = pytesseract.image_to_string(bin_img, config="--oem 3 --psm 6")
+            if not bin_text.strip():
+                bin_text = pytesseract.image_to_string(bin_img, config="--oem 3 --psm 4")
+            if len(bin_text.strip()) > len(text.strip()):
+                text = bin_text
+                avg_conf = _calc_conf(bin_img)
 
         return str(text or ""), round(avg_conf, 3)
 

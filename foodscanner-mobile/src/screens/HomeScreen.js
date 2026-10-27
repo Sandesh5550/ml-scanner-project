@@ -53,7 +53,7 @@ const BENCHMARK_HERO_FOODS = [
   {
     name: 'Rolled Oats',
     category: 'Whole Grain',
-    uri: 'https://images.unsplash.com/photo-1517093709121-657754b2d35b?auto=format&fit=crop&w=600&q=80',
+    uri: 'https://images.unsplash.com/photo-1586201375761-83865001e31c?auto=format&fit=crop&w=600&q=80',
   },
   {
     name: 'Enriched Cereal',
@@ -103,7 +103,12 @@ export default function HomeScreen({ navigation }) {
 
   // Dynamic food rotation state
   const [activeHeroIndex, setActiveHeroIndex] = useState(0);
+  const [heroImageError, setHeroImageError] = useState(false);
   const heroImageOpacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    setHeroImageError(false);
+  }, [activeHeroIndex]);
 
   const fetchData = React.useCallback(async () => {
     try {
@@ -397,11 +402,18 @@ export default function HomeScreen({ navigation }) {
               {/* Right Column: Editorial Food Photography Container */}
               <View style={styles.heroRightCol}>
                 <View style={[styles.heroImageFrame, PREMIUM_SHADOWS.md]}>
-                  <Animated.Image
-                    source={{ uri: currentHeroFood.uri }}
-                    style={[styles.heroImage, { opacity: heroImageOpacity }]}
-                    resizeMode="cover"
-                  />
+                  {!heroImageError ? (
+                    <Animated.Image
+                      source={{ uri: currentHeroFood.uri }}
+                      style={[styles.heroImage, { opacity: heroImageOpacity }]}
+                      resizeMode="cover"
+                      onError={() => setHeroImageError(true)}
+                    />
+                  ) : (
+                    <View style={[styles.heroImage, styles.heroImageFallback]}>
+                      <Ionicons name="fast-food-outline" size={32} color={PREMIUM_COLORS.secondaryDark} />
+                    </View>
+                  )}
                   <View style={styles.heroImageTagPill}>
                     <Text style={styles.heroImageTagText} numberOfLines={1}>
                       {currentHeroFood.name}
@@ -844,6 +856,11 @@ const styles = StyleSheet.create({
   heroImage: {
     width: '100%',
     height: '100%',
+  },
+  heroImageFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: PREMIUM_COLORS.primaryLight,
   },
   heroImageTagPill: {
     position: 'absolute',

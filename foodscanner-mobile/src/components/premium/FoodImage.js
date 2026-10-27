@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { PREMIUM_COLORS, PREMIUM_RADIUS, PREMIUM_SHADOWS } from '../../theme/premiumTheme';
@@ -14,8 +14,15 @@ export default function FoodImage({
 }) {
   const [imageError, setImageError] = useState(false);
 
+  const isLocalAsset = typeof source === 'number';
   const imageUri = typeof source === 'string' ? source.trim() : source?.uri;
+
+  useEffect(() => {
+    setImageError(false);
+  }, [imageUri, isLocalAsset]);
+
   const isRemoteValid = Boolean(imageUri && imageUri.startsWith('http') && !imageError);
+  const isImageValid = (isRemoteValid || isLocalAsset) && !imageError;
 
   const getCategoryFallback = () => {
     const text = `${productName} ${category}`.toLowerCase();
@@ -46,7 +53,7 @@ export default function FoodImage({
   const fallback = getCategoryFallback();
   const boxHeight = height || size;
 
-  if (isRemoteValid) {
+  if (isImageValid) {
     return (
       <View
         style={[
@@ -62,7 +69,7 @@ export default function FoodImage({
         ]}
       >
         <Image
-          source={{ uri: imageUri }}
+          source={isLocalAsset ? source : { uri: imageUri }}
           style={[styles.image, { borderRadius }]}
           resizeMode="cover"
           onError={() => setImageError(true)}
