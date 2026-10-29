@@ -290,17 +290,30 @@ def _pct_more(a: float | None, b: float | None) -> int | None:
     return int(round(((b - a) / a) * 100))
 
 
+_INDIAN_FOODS_CACHE: pd.DataFrame | None = None
+
+
+def _get_indian_foods_df() -> pd.DataFrame | None:
+    global _INDIAN_FOODS_CACHE
+    if _INDIAN_FOODS_CACHE is not None:
+        return _INDIAN_FOODS_CACHE
+    try:
+        csv_path = Path(__file__).resolve().parents[1] / "datasets" / "indian_foods" / "indian_packaged_foods.csv"
+        if csv_path.exists():
+            _INDIAN_FOODS_CACHE = pd.read_csv(csv_path)
+            return _INDIAN_FOODS_CACHE
+    except Exception:
+        pass
+    return None
+
+
 def _csv_fuzzy_lookup(name: str, threshold: float = 75.0) -> dict | None:
     q = (name or "").strip()
     if not q:
         return None
 
-    try:
-        df = pd.read_csv(Path(__file__).resolve().parents[1] / "datasets" / "indian_foods" / "indian_packaged_foods.csv")
-    except Exception:
-        return None
-
-    if "product_name" not in df.columns:
+    df = _get_indian_foods_df()
+    if df is None or "product_name" not in df.columns:
         return None
 
     best_row = None
@@ -1035,11 +1048,12 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)) ->
 
 @app.get("/search", tags=["products"])
 def search(
-    query: str = Query(..., min_length=2, max_length=100),
+    query: str = Query(..., min_length=1, max_length=100),
+    limit: int = Query(25, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[dict]:
-    return search_products(db, query)
+    return search_products(db, query, limit=limit)
 
 
 @app.get("/product/{barcode}", tags=["products"])

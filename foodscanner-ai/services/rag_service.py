@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Optional
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -65,7 +66,7 @@ class KnowledgeRetriever:
     def retrieve(self, query: str, top_k: int = 3, min_score: float = 0.20) -> List[Dict[str, Any]]:
         """Retrieve the top_k most relevant knowledge items for a user query."""
         q = (query or "").strip()
-        if not q or not self.documents or self.vectorizer is None or self.tfidf_matrix is None:
+        if len(q) < 3 or not self.documents or self.vectorizer is None or self.tfidf_matrix is None:
             return []
 
         # 1. Cosine similarity via TF-IDF
@@ -74,13 +75,13 @@ class KnowledgeRetriever:
 
         # 2. Token / keyword similarity via RapidFuzz for query-topic matching
         q_lower = q.lower()
-        q_words = set(q_lower.split())
+        q_words = set(re.findall(r"\b[a-zA-Z0-9_-]+\b", q_lower))
         results: List[Dict[str, Any]] = []
 
         for idx, doc in enumerate(self.documents):
             tfidf_score = float(cos_scores[idx])
             topic_str = doc["topic"].lower().replace("_", " ")
-            doc_words = set((topic_str + " " + doc["text"]).lower().split())
+            doc_words = set(re.findall(r"\b[a-zA-Z0-9_-]+\b", (topic_str + " " + doc["text"]).lower()))
 
             # Skip documents with zero vocabulary and zero token overlap
             if tfidf_score == 0.0 and not bool(q_words & doc_words):
