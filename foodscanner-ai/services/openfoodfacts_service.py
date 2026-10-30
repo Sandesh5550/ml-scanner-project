@@ -6,6 +6,8 @@ from typing import Any, Optional
 
 import httpx
 
+from services.product_search import normalize_brand
+
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +45,7 @@ def _normalize_product_dict(barcode: str, product: dict[str, Any]) -> Optional[d
 
     # Brand extraction and cleaning
     raw_brands = product.get("brands") or product.get("brand") or None
-    brand: Optional[str] = None
-    if raw_brands is not None:
-        first_brand = str(raw_brands).split(",")[0].strip()
-        brand = first_brand or None
+    brand = normalize_brand(raw_brands)
 
     # Calories: prefer kcal, fall back to kJ converted to kcal
     calories = _to_float(nutriments.get("energy-kcal_100g") or nutriments.get("energy-kcal"))

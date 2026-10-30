@@ -26,3 +26,7 @@ htmlcov/
 .venv*/
 venv/
 ENV/
+
+# Obsolete sync checkouts
+hf-space-sync/
+hf-web-sync/

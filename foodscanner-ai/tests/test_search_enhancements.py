@@ -8,7 +8,7 @@ from database.orm import SessionLocal, init_db
 from database.models import User
 from services.auth_service import hash_password, create_access_token
 from services import db_service
-from services.product_search import search_products
+from services.product_search import normalize_brand, search_products
 
 
 @pytest.fixture(scope="module")
@@ -132,3 +132,23 @@ def test_search_unauthenticated_rejected(client):
     """Verify GET /search requires valid JWT auth."""
     res = client.get("/search?query=Amul")
     assert res.status_code == 401
+
+
+def test_brand_normalization_rules():
+    """Verify brand normalization preserves mixed-case and acronyms while normalizing all-caps."""
+    assert normalize_brand("AMUL") == "Amul"
+    assert normalize_brand("BRITANNIA") == "Britannia"
+    assert normalize_brand("CADBURY") == "Cadbury"
+    assert normalize_brand("KELLOGG'S") == "Kellogg's"
+    assert normalize_brand("KFC") == "KFC"
+    assert normalize_brand("MDH") == "MDH"
+    assert normalize_brand("ITC") == "ITC"
+    assert normalize_brand("M&S") == "M&S"
+    assert normalize_brand("iPhone") == "iPhone"
+    assert normalize_brand("McVitie's") == "McVitie's"
+    assert normalize_brand("Lay's") == "Lay's"
+    assert normalize_brand("Parle-G") == "Parle-G"
+    assert normalize_brand("Bio Choice, WholeGrains") == "Bio Choice"
+    assert normalize_brand("liebig") == "Liebig"
+    assert normalize_brand(None) is None
+    assert normalize_brand("   ") is None
