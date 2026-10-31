@@ -115,6 +115,7 @@ jobs:
   docker-validation:
     name: Docker Build & Compose Check
     runs-on: ubuntu-latest
+    needs: [backend-tests]
 
     steps:
       - name: Checkout repository
@@ -157,3 +158,18 @@ jobs:
         if: always()
         run: |
           docker rm -f foodscanner-ci-smoke 2>/dev/null || true
+
+      - name: Log in to Docker Hub
+        if: success() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/sandesh-latest')
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag and Push Backend Image to Docker Hub
+        if: success() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/sandesh-latest')
+        run: |
+          docker tag foodscanner-ai:ci sandesh5550/pramaan-backend:latest
+          docker tag foodscanner-ai:ci sandesh5550/pramaan-backend:${{ github.sha }}
+          docker push sandesh5550/pramaan-backend:latest
+          docker push sandesh5550/pramaan-backend:${{ github.sha }}
