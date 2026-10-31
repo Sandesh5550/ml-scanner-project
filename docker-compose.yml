@@ -8,10 +8,26 @@ services:
       dockerfile: Dockerfile
     image: foodscanner-ai:latest
     restart: "no"
-    command: ["alembic", "upgrade", "head"]
+    command: >
+      sh -c "
+        if [ -z \"$$DATABASE_URL\" ]; then
+          if python -c \"import socket, os; s = socket.socket(); s.settimeout(1.5); s.connect((os.environ.get('POSTGRES_HOST', 'postgres'), int(os.environ.get('POSTGRES_PORT', 5432)))); s.close()\" 2>/dev/null; then
+            DATABASE_URL=$$(python -c \"import urllib.parse, os; u = urllib.parse.quote_plus(os.environ.get('POSTGRES_USER', 'pramaan')); p = urllib.parse.quote_plus(os.environ.get('POSTGRES_PASSWORD', 'pramaan_dev_password')); d = urllib.parse.quote_plus(os.environ.get('POSTGRES_DB', 'foodscanner_db')); h = os.environ.get('POSTGRES_HOST', 'postgres'); port = os.environ.get('POSTGRES_PORT', '5432'); print(f'postgresql://{u}:{p}@{h}:{port}/{d}')\")
+          else
+            DATABASE_URL=\"sqlite:////app/database/foodscanner.db\"
+          fi
+          export DATABASE_URL
+        fi
+        exec alembic upgrade head
+      "
     environment:
       - ENVIRONMENT=${ENVIRONMENT:-development}
-      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/database/foodscanner.db}
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_USER=${POSTGRES_USER:-pramaan}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-pramaan_dev_password}
+      - POSTGRES_DB=${POSTGRES_DB:-foodscanner_db}
+      - DATABASE_URL=${DATABASE_URL:-}
     volumes:
       - ./foodscanner-ai/database:/app/database
     depends_on:
@@ -32,11 +48,28 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    command: >
+      sh -c "
+        if [ -z \"$$DATABASE_URL\" ]; then
+          if python -c \"import socket, os; s = socket.socket(); s.settimeout(1.5); s.connect((os.environ.get('POSTGRES_HOST', 'postgres'), int(os.environ.get('POSTGRES_PORT', 5432)))); s.close()\" 2>/dev/null; then
+            DATABASE_URL=$$(python -c \"import urllib.parse, os; u = urllib.parse.quote_plus(os.environ.get('POSTGRES_USER', 'pramaan')); p = urllib.parse.quote_plus(os.environ.get('POSTGRES_PASSWORD', 'pramaan_dev_password')); d = urllib.parse.quote_plus(os.environ.get('POSTGRES_DB', 'foodscanner_db')); h = os.environ.get('POSTGRES_HOST', 'postgres'); port = os.environ.get('POSTGRES_PORT', '5432'); print(f'postgresql://{u}:{p}@{h}:{port}/{d}')\")
+          else
+            DATABASE_URL=\"sqlite:////app/database/foodscanner.db\"
+          fi
+          export DATABASE_URL
+        fi
+        exec uvicorn api.main:app --host 0.0.0.0 --port $${PORT:-8000}
+      "
     environment:
       - PORT=8000
       - ENVIRONMENT=development
       - SECRET_KEY=${SECRET_KEY:-pramaan-local-dev-secret-key-minimum-32-chars}
-      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/database/foodscanner.db}
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_USER=${POSTGRES_USER:-pramaan}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-pramaan_dev_password}
+      - POSTGRES_DB=${POSTGRES_DB:-foodscanner_db}
+      - DATABASE_URL=${DATABASE_URL:-}
       - FOODSCANNER_OCR_ENGINE=tesseract
       - AI_PROVIDER=mock
       - AI_MODEL=gemini-1.5-flash
