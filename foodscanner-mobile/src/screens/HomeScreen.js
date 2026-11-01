@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
+  TextInput,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
@@ -22,6 +23,7 @@ import {
   analyzeManualProduct,
   deleteFoodLogItem,
   getNetworkErrorMessage,
+  searchProduct,
 } from '../services/api';
 
 import {
@@ -81,6 +83,16 @@ function _scoreMeta(score) {
   return { fg: PREMIUM_COLORS.status.avoid, bg: PREMIUM_COLORS.status.avoidBg, label: 'AVOID' };
 }
 
+function _nutriscoreColor(grade) {
+  const g = String(grade || '').toLowerCase();
+  if (g === 'a') return '#15803D';
+  if (g === 'b') return '#65A30D';
+  if (g === 'c') return '#EAB308';
+  if (g === 'd') return '#EA580C';
+  if (g === 'e') return '#DC2626';
+  return PREMIUM_COLORS.secondary;
+}
+
 export default function HomeScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
@@ -106,9 +118,104 @@ export default function HomeScreen({ navigation }) {
   const [heroImageError, setHeroImageError] = useState(false);
   const heroImageOpacity = useRef(new Animated.Value(1)).current;
 
+  // Product Search State
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState(null);
+  const [selectingBarcode, setSelectingBarcode] = useState(null);
+
   useEffect(() => {
     setHeroImageError(false);
   }, [activeHeroIndex]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedQuery(searchQuery.trim());
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (!debouncedQuery || debouncedQuery.length < 2) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      setSearchError(null);
+      return;
+    }
+
+    let isSubscribed = true;
+    setSearchLoading(true);
+    setSearchError(null);
+
+    searchProduct(debouncedQuery)
+      .then((data) => {
+        if (!isSubscribed) return;
+        setSearchResults(Array.isArray(data) ? data : []);
+        setSearchLoading(false);
+      })
+      .catch((err) => {
+        if (!isSubscribed) return;
+        const msg = getNetworkErrorMessage(err) || 'Failed to search products';
+        setSearchError(msg);
+        setSearchLoading(false);
+      });
+
+    return () => {
+      isSubscribed = false;
+    };
+  }, [debouncedQuery]);
+
+  const handleClearSearch = () => {
+    setSearchQuery('');
+    setDebouncedQuery('');
+    setSearchResults([]);
+    setSearchLoading(false);
+    setSearchError(null);
+  };
+
+  const handleSelectSearchResult = async (item) => {
+    if (!item) return;
+    const barcode = item.barcode ? String(item.barcode).trim() : null;
+    const productName = item.product_name ? String(item.product_name).trim() : 'Food Product';
+    const key = barcode || productName;
+    setSelectingBarcode(key);
+
+    try {
+      let result;
+      const isStandardBarcode = barcode && barcode !== '00000000' && /^\d{8,14}$/.test(barcode);
+
+      if (isStandardBarcode) {
+        result = await scanProduct(barcode, productName);
+      } else {
+        result = await analyzeManualProduct({
+          product_name: productName,
+          calories: item.nutrition?.calories != null ? Number(item.nutrition.calories) : null,
+          fat: item.nutrition?.fat != null ? Number(item.nutrition.fat) : null,
+          sugar: item.nutrition?.sugar != null ? Number(item.nutrition.sugar) : null,
+          salt: item.nutrition?.salt != null ? Number(item.nutrition.salt) : null,
+          protein: item.nutrition?.protein != null ? Number(item.nutrition.protein) : null,
+          fiber: item.nutrition?.fiber != null ? Number(item.nutrition.fiber) : null,
+          carbs: item.nutrition?.carbs != null ? Number(item.nutrition.carbs) : null,
+          ingredients: item.ingredients || null,
+        });
+      }
+
+      if (result) {
+        navigation.navigate('Result', { result, timestamp: Date.now() });
+      }
+    } catch (_e) {
+      navigation.navigate('ManualEntry', {
+        productName,
+        calories: item.nutrition?.calories != null ? String(item.nutrition.calories) : null,
+        nutrition: item.nutrition || null,
+        ingredients: item.ingredients || null,
+      });
+    } finally {
+      setSelectingBarcode(null);
+    }
+  };
 
   const fetchData = React.useCallback(async () => {
     try {
@@ -360,6 +467,124 @@ export default function HomeScreen({ navigation }) {
               )}
             </TouchableOpacity>
           </View>
+
+          {/* Global Product Search Bar */}
+          <View style={[styles.searchBarContainer, PREMIUM_SHADOWS.sm]}>
+            <Ionicons name="search" size={18} color={PREMIUM_COLORS.primaryDark} style={styles.searchIcon} />
+            <TextInput
+              style={styles.searchInput}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search products, brands or ingredients…"
+              placeholderTextColor={PREMIUM_COLORS.secondary}
+              returnKeyType="search"
+              autoCorrect={false}
+              clearButtonMode="while-editing"
+            />
+            {searchLoading ? (
+              <ActivityIndicator size="small" color={PREMIUM_COLORS.primaryDark} style={{ marginRight: 6 }} />
+            ) : null}
+            {searchQuery ? (
+              <TouchableOpacity activeOpacity={0.7} onPress={handleClearSearch} style={styles.searchClearBtn} accessibilityLabel="Clear search">
+                <Ionicons name="close-circle" size={18} color={PREMIUM_COLORS.secondary} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+
+          {/* Search Feedback / State Overlay */}
+          {debouncedQuery.length >= 2 ? (
+            <View style={styles.searchFeedbackArea}>
+              {searchLoading ? (
+                <View style={[styles.searchFeedbackCard, PREMIUM_SHADOWS.sm]}>
+                  <ActivityIndicator size="small" color={PREMIUM_COLORS.primaryDark} />
+                  <Text style={styles.searchFeedbackText}>Searching products, brands & ingredients...</Text>
+                </View>
+              ) : searchError ? (
+                <View style={[styles.searchErrorCard, PREMIUM_SHADOWS.sm]}>
+                  <Ionicons name="alert-circle-outline" size={20} color={PREMIUM_COLORS.status.avoid} />
+                  <Text style={styles.searchErrorText}>{searchError}</Text>
+                  <TouchableOpacity
+                    style={styles.searchRetryBtn}
+                    onPress={() => setDebouncedQuery(searchQuery.trim())}
+                  >
+                    <Text style={styles.searchRetryText}>Retry</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : searchResults.length === 0 ? (
+                <View style={[styles.searchEmptyCard, PREMIUM_SHADOWS.sm]}>
+                  <Ionicons name="file-tray-outline" size={28} color={PREMIUM_COLORS.secondary} style={{ marginBottom: 6 }} />
+                  <Text style={styles.searchEmptyTitle}>No products found</Text>
+                  <Text style={styles.searchEmptySub}>
+                    {"We couldn't find matches for \"" + debouncedQuery + '". Try searching by brand (e.g. Amul, Britannia) or ingredient.'}
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.searchResultsContainer}>
+                  <View style={styles.searchResultsHeaderRow}>
+                    <Text style={styles.searchResultsHeaderTitle}>SEARCH RESULTS</Text>
+                    <Text style={styles.searchResultsCount}>{searchResults.length} found</Text>
+                  </View>
+                  {searchResults.map((item, index) => {
+                    const isSelecting = selectingBarcode === (item.barcode || item.product_name);
+                    return (
+                      <TouchableOpacity
+                        key={`${item.barcode || ''}-${item.product_name}-${index}`}
+                        activeOpacity={0.88}
+                        style={[styles.searchResultCard, PREMIUM_SHADOWS.sm]}
+                        onPress={() => handleSelectSearchResult(item)}
+                        disabled={isSelecting}
+                      >
+                        <View style={styles.searchResultMain}>
+                          <View style={{ flex: 1 }}>
+                            <View style={styles.searchResultTitleRow}>
+                              <Text style={styles.searchResultTitle} numberOfLines={1}>
+                                {item.product_name}
+                              </Text>
+                              {item.nutriscore ? (
+                                <View style={[styles.nutriscoreBadge, { backgroundColor: _nutriscoreColor(item.nutriscore) }]}>
+                                  <Text style={styles.nutriscoreText}>{item.nutriscore.toUpperCase()}</Text>
+                                </View>
+                              ) : null}
+                            </View>
+
+                            {item.brand ? (
+                              <Text style={styles.searchResultBrand} numberOfLines={1}>
+                                {item.brand}
+                              </Text>
+                            ) : null}
+
+                            <View style={styles.searchResultBadgesRow}>
+                              {item.nutrition?.calories != null ? (
+                                <View style={styles.searchBadge}>
+                                  <Text style={styles.searchBadgeText}>{Math.round(item.nutrition.calories)} kcal</Text>
+                                </View>
+                              ) : null}
+                              {item.nutrition?.protein != null ? (
+                                <View style={styles.searchBadge}>
+                                  <Text style={styles.searchBadgeText}>{item.nutrition.protein}g protein</Text>
+                                </View>
+                              ) : null}
+                              {item.source === 'indian_dataset' ? (
+                                <View style={[styles.searchBadge, { backgroundColor: '#FEF3C7' }]}>
+                                  <Text style={[styles.searchBadgeText, { color: '#92400E' }]}>Indian Food</Text>
+                                </View>
+                              ) : null}
+                            </View>
+                          </View>
+
+                          {isSelecting ? (
+                            <ActivityIndicator size="small" color={PREMIUM_COLORS.primaryDark} style={{ marginLeft: 8 }} />
+                          ) : (
+                            <Ionicons name="chevron-forward" size={18} color={PREMIUM_COLORS.secondary} style={{ marginLeft: 6 }} />
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+          ) : null}
 
           {/* 2. Hero Editorial Scanner Card with Dynamic Food Imagery */}
           <Animated.View
@@ -634,7 +859,7 @@ export default function HomeScreen({ navigation }) {
             <TouchableOpacity
               activeOpacity={0.88}
               style={[styles.aiCtaBtn, PREMIUM_SHADOWS.sm]}
-              onPress={() => navigation.navigate('Main', { screen: 'Scan' })}
+              onPress={() => navigation.navigate('AIAssistant')}
             >
               <Text style={styles.aiCtaText}>Ask AI →</Text>
             </TouchableOpacity>
@@ -763,6 +988,180 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: PREMIUM_COLORS.primaryDark,
+  },
+
+  // Global Product Search Bar
+  searchBarContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: PREMIUM_COLORS.card,
+    borderRadius: PREMIUM_RADIUS.pill,
+    borderWidth: 1,
+    borderColor: PREMIUM_COLORS.border,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 8,
+    marginBottom: 16,
+  },
+  searchIcon: {
+    marginRight: 10,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: PREMIUM_COLORS.ink,
+    fontWeight: '500',
+    padding: 0,
+  },
+  searchClearBtn: {
+    padding: 4,
+    marginLeft: 6,
+  },
+  searchFeedbackArea: {
+    marginBottom: 8,
+  },
+  searchFeedbackCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: PREMIUM_COLORS.card,
+    borderRadius: PREMIUM_RADIUS.md,
+    borderWidth: 1,
+    borderColor: PREMIUM_COLORS.border,
+    padding: 14,
+    marginBottom: 14,
+    gap: 12,
+  },
+  searchFeedbackText: {
+    fontSize: 13,
+    color: PREMIUM_COLORS.secondary,
+    fontWeight: '500',
+  },
+  searchErrorCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEE2E2',
+    borderRadius: PREMIUM_RADIUS.md,
+    borderWidth: 1,
+    borderColor: '#F87171',
+    padding: 14,
+    marginBottom: 14,
+    gap: 10,
+  },
+  searchErrorText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#991B1B',
+    fontWeight: '600',
+  },
+  searchRetryBtn: {
+    backgroundColor: '#DC2626',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  searchRetryText: {
+    color: PREMIUM_COLORS.white,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  searchEmptyCard: {
+    alignItems: 'center',
+    backgroundColor: PREMIUM_COLORS.card,
+    borderRadius: PREMIUM_RADIUS.md,
+    borderWidth: 1,
+    borderColor: PREMIUM_COLORS.border,
+    padding: 24,
+    marginBottom: 16,
+  },
+  searchEmptyTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: PREMIUM_COLORS.ink,
+    marginBottom: 4,
+  },
+  searchEmptySub: {
+    fontSize: 12,
+    color: PREMIUM_COLORS.secondary,
+    textAlign: 'center',
+    lineHeight: 18,
+    maxWidth: 290,
+  },
+  searchResultsContainer: {
+    marginBottom: 16,
+  },
+  searchResultsHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+    paddingHorizontal: 4,
+  },
+  searchResultsHeaderTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: PREMIUM_COLORS.secondary,
+    letterSpacing: 0.6,
+  },
+  searchResultsCount: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: PREMIUM_COLORS.primaryDark,
+  },
+  searchResultCard: {
+    backgroundColor: PREMIUM_COLORS.card,
+    borderRadius: PREMIUM_RADIUS.md,
+    borderWidth: 1,
+    borderColor: PREMIUM_COLORS.border,
+    padding: 14,
+    marginBottom: 10,
+  },
+  searchResultMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  searchResultTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 3,
+  },
+  searchResultTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: PREMIUM_COLORS.ink,
+    flex: 1,
+  },
+  searchResultBrand: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: PREMIUM_COLORS.secondary,
+    marginBottom: 6,
+  },
+  searchResultBadgesRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  searchBadge: {
+    backgroundColor: PREMIUM_COLORS.bgAlt,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: PREMIUM_RADIUS.pill,
+  },
+  searchBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: PREMIUM_COLORS.ink,
+  },
+  nutriscoreBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  nutriscoreText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: PREMIUM_COLORS.white,
   },
 
   // 2. Editorial Hero Scanner Card

@@ -3,7 +3,9 @@ __pycache__/
 *.pyo
 *.pyd
 .venv/
+.venv*
 venv/
+venv*
 node_modules/
 .env
 .env.*
@@ -16,9 +18,12 @@ datasets/large_openfoodfacts*.csv
 foodscanner-ai/datasets/large_openfoodfacts*.csv
 foodscanner-ai/datasets/off_india_raw.json
 
-# VCS and testing caches
+# VCS, IDE and testing caches
 .git/
 .github/
+.idea/
+.vscode/
+*.egg-info/
 .agents/
 .pytest_cache/
 .coverage

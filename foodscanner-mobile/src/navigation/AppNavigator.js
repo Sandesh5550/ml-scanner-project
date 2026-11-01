@@ -19,6 +19,7 @@ import ReportScreen from '../screens/ReportScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import ManualEntryScreen from '../screens/ManualEntryScreen';
 import OCRScanScreen from '../screens/OCRScanScreen';
+import AIAssistantScreen from '../screens/AIAssistantScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -118,6 +119,7 @@ export default function AppNavigator() {
           />
           <Stack.Screen name="ManualEntry" component={ManualEntryScreen} options={{ headerShown: false }} />
           <Stack.Screen name="OCRScan" component={OCRScanScreen} options={{ headerShown: false }} />
+          <Stack.Screen name="AIAssistant" component={AIAssistantScreen} options={{ headerShown: false }} />
         </>
       )}
     </Stack.Navigator>

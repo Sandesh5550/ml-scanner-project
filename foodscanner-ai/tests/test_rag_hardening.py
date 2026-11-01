@@ -141,6 +141,25 @@ def test_no_relevant_retrieval():
     assert len(results) == 0
 
 
+def test_unindexed_topic_returns_honest_insufficient_evidence(auth_client):
+    """Verify queries on topics not present in local KB (e.g. palm oil) return 0 retrieved context and honest disclaimer."""
+    client = auth_client["client"]
+    res = client.post("/chat", json={"message": "Is palm oil healthy in biscuits?"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["retrieved_context_count"] == 0
+    assert data["sources"] == []
+    assert "sufficient verified evidence was not found" in data["answer"].lower()
+
+
+def test_punctuation_resilient_tokenization():
+    """Verify trailing punctuation (e.g. question marks, commas, parentheses) does not prevent retrieval."""
+    # Query with question marks and parentheses
+    results = retrieve_relevant_knowledge("What does INS 621 (MSG) do?", top_k=2)
+    assert len(results) >= 1
+    assert any("additive" in r["topic"] or r["id"] == "FAQ-ADD-007" for r in results)
+
+
 # ---------------------------------------------------------------------------
 # E. Empty Knowledge Base
 # ---------------------------------------------------------------------------

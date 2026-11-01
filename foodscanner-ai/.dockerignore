@@ -2,8 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.venv/
-venv/
+.venv*
+venv*
 .env
 .env.*
 database.zip
@@ -27,6 +27,9 @@ tests/
 # Exclude VCS, IDE, and reports artifacts
 .git/
 .github/
+.idea/
+.vscode/
+*.egg-info/
 .DS_Store
 Thumbs.db
 reports/
