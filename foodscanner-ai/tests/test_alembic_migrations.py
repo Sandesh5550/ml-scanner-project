@@ -506,7 +506,7 @@ def test_render_configuration_has_pre_deploy_migration():
     dockerfile_path = BASE_DIR / "Dockerfile"
     assert dockerfile_path.exists(), f"Dockerfile not found at {dockerfile_path}"
     dockerfile_content = dockerfile_path.read_text(encoding="utf-8")
-    assert "alembic upgrade head && uvicorn" in dockerfile_content, (
+    assert "alembic upgrade head && exec uvicorn" in dockerfile_content, (
         "Dockerfile CMD must execute 'alembic upgrade head' before starting Uvicorn"
     )
 
