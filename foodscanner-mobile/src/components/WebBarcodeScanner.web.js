@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { BrowserMultiFormatReader, BarcodeFormat, DecodeHintType } from '@zxing/library';
+import { BrowserMultiFormatReader } from '@zxing/browser';
+import { BarcodeFormat, DecodeHintType } from '@zxing/library';
 import { PREMIUM_COLORS, PREMIUM_SHADOWS, PREMIUM_RADIUS } from '../theme/premiumTheme';
 
 export default function WebBarcodeScanner({
@@ -12,6 +13,8 @@ export default function WebBarcodeScanner({
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const readerRef = useRef(null);
+  const controlsRef = useRef(null);
+  const animFrameRef = useRef(null);
   const isScanningRef = useRef(false);
 
   const [cameraState, setCameraState] = useState('initializing'); // 'initializing' | 'active' | 'permission_denied' | 'not_found' | 'error' | 'detected'
@@ -45,10 +48,17 @@ export default function WebBarcodeScanner({
 
   const stopCamera = () => {
     isScanningRef.current = false;
-    if (readerRef.current) {
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+    if (controlsRef.current) {
       try {
-        readerRef.current.reset();
+        controlsRef.current.stop();
       } catch (_e) {}
+      controlsRef.current = null;
+    }
+    if (readerRef.current) {
       readerRef.current = null;
     }
     if (streamRef.current) {
@@ -99,7 +109,12 @@ export default function WebBarcodeScanner({
 
       videoRef.current.srcObject = stream;
       videoRef.current.setAttribute('playsinline', 'true');
-      await videoRef.current.play();
+      videoRef.current.setAttribute('muted', 'true');
+      try {
+        await videoRef.current.play();
+      } catch (playErr) {
+        console.warn('Video play warning:', playErr);
+      }
 
       setCameraState('active');
       isScanningRef.current = true;
@@ -138,42 +153,51 @@ export default function WebBarcodeScanner({
     }
   };
 
-  const initBarcodeDetection = (videoElement) => {
+  const initBarcodeDetection = async (videoElement) => {
     // Priority 1: Native BarcodeDetector API (fast hardware acceleration in modern Chromium)
     if (typeof window !== 'undefined' && 'BarcodeDetector' in window) {
       try {
-        const formats = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'qr_code'];
-        const detector = new window.BarcodeDetector({ formats });
+        let formats = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'qr_code'];
+        if (typeof window.BarcodeDetector.getSupportedFormats === 'function') {
+          const supported = await window.BarcodeDetector.getSupportedFormats();
+          if (Array.isArray(supported)) {
+            formats = formats.filter((f) => supported.includes(f));
+          }
+        }
 
-        const scanFrame = async () => {
-          if (!isScanningRef.current || !videoElement) return;
-          try {
-            if (videoElement.readyState >= 2) {
-              const barcodes = await detector.detect(videoElement);
-              if (barcodes && barcodes.length > 0) {
-                const raw = barcodes[0].rawValue;
-                if (raw) {
-                  handleBarcodeFound(raw);
-                  return;
+        if (formats.length > 0) {
+          const detector = new window.BarcodeDetector({ formats });
+
+          const scanFrame = async () => {
+            if (!isScanningRef.current || !videoElement) return;
+            try {
+              if (videoElement.readyState >= 2) {
+                const barcodes = await detector.detect(videoElement);
+                if (barcodes && barcodes.length > 0) {
+                  const raw = barcodes[0].rawValue;
+                  if (raw) {
+                    handleBarcodeFound(raw);
+                    return;
+                  }
                 }
               }
+            } catch (_e) {
+              // Ignore individual frame miss
             }
-          } catch (_e) {
-            // Ignore individual frame miss
-          }
-          if (isScanningRef.current) {
-            setTimeout(scanFrame, 120);
-          }
-        };
+            if (isScanningRef.current) {
+              animFrameRef.current = requestAnimationFrame(scanFrame);
+            }
+          };
 
-        scanFrame();
-        return;
+          scanFrame();
+          return;
+        }
       } catch (detectorErr) {
         console.warn('Native BarcodeDetector fallback to ZXing reader:', detectorErr);
       }
     }
 
-    // Priority 2: @zxing/library fallback (universal browser support)
+    // Priority 2: @zxing/browser reader (universal browser support across Chrome, Safari, Firefox, Edge)
     try {
       const hints = new Map();
       hints.set(DecodeHintType.POSSIBLE_FORMATS, [
@@ -187,10 +211,13 @@ export default function WebBarcodeScanner({
       ]);
       hints.set(DecodeHintType.TRY_HARDER, true);
 
-      const reader = new BrowserMultiFormatReader(hints, 200);
+      const reader = new BrowserMultiFormatReader(hints, {
+        delayBetweenScanAttempts: 120,
+        delayBetweenScanSuccess: 500,
+      });
       readerRef.current = reader;
 
-      reader.decodeFromVideoElement(videoElement, (result, err) => {
+      const controls = await reader.decodeFromVideoElement(videoElement, (result, err) => {
         if (!isScanningRef.current) return;
         if (result) {
           const text = result.getText();
@@ -199,6 +226,7 @@ export default function WebBarcodeScanner({
           }
         }
       });
+      controlsRef.current = controls;
     } catch (zxingErr) {
       console.error('ZXing reader error:', zxingErr);
     }
@@ -224,7 +252,8 @@ export default function WebBarcodeScanner({
           position: 'absolute',
           top: 0,
           left: 0,
-          display: cameraState === 'active' || cameraState === 'detected' ? 'block' : 'none',
+          opacity: cameraState === 'active' || cameraState === 'detected' ? 1 : 0,
+          zIndex: 0,
         }}
         autoPlay
         playsInline
