@@ -1,11 +1,38 @@
 # PRAMAAN — AI Food Scanner (ml-scanner-project)
 
-[![CI / Test Suite](https://img.shields.io/badge/Backend%20Tests-77%20Passing-brightgreen)](file:///c:/Users/student/Desktop/devside/ml-scanner-project/foodscanner-ai/tests)
-[![Mobile Tests](https://img.shields.io/badge/Mobile%20Tests-5%20Passing-brightgreen)](file:///c:/Users/student/Desktop/devside/ml-scanner-project/foodscanner-mobile/tests)
-[![Expo SDK](https://img.shields.io/badge/Expo%20SDK-54-blue)](file:///c:/Users/student/Desktop/devside/ml-scanner-project/foodscanner-mobile/package.json)
-[![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12-blue)](file:///c:/Users/student/Desktop/devside/ml-scanner-project/foodscanner-ai/pyproject.toml)
+[![CI / Test Suite](https://img.shields.io/badge/Backend%20Tests-77%20Passing-brightgreen)](foodscanner-ai/tests)
+[![Mobile Tests](https://img.shields.io/badge/Mobile%20Tests-5%20Passing-brightgreen)](foodscanner-mobile/tests)
+[![Expo SDK](https://img.shields.io/badge/Expo%20SDK-54-blue)](foodscanner-mobile/package.json)
+[![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12-blue)](foodscanner-ai/pyproject.toml)
 
-PRAMAAN is an intelligent nutrition intelligence platform designed to decode packaged foods for health-conscious consumers. By scanning barcodes or nutrition fact labels, PRAMAAN analyzes nutrients, detects risky ingredients and additives, generates explainable health scores, provides healthier product alternatives, deterministically verifies front-of-pack regulatory health claims against official FSSAI standards, and tracks personal food consumption.
+**PRAMAAN (FoodScanner AI)** is a production-oriented full-stack nutrition intelligence platform designed to decode packaged foods for health-conscious consumers. By scanning barcodes or nutrition fact labels, PRAMAAN analyzes nutrients, detects risky ingredients and additives, generates explainable health scores, provides healthier product alternatives, deterministically verifies front-of-pack regulatory health claims against official FSSAI standards, and tracks personal food consumption.
+
+The project combines a FastAPI backend, an Expo React Native client, barcode and product lookup, authentication, reporting, and ML-assisted nutrition scoring.
+
+### What It Does
+
+- **User Authentication & Profiles:** Register, log in, and manage food-scanning sessions with secure JWT-based authentication and customizable dietary preference thresholds.
+- **Barcode & Product Lookup:** Query packaged food information with local database caching and resilient external OpenFoodFacts fallback integration.
+- **Nutritional & Ingredient Analysis:** Analyzes macro- and micronutrients, detects harmful additives and risky ingredients using token-boundary matching to prevent substring false positives.
+- **Explainable Health Scoring:** Computes transparent, personalized health scores (0–100) with clear factor-by-factor explanations rather than opaque ratings.
+- **NutriScore ML Classification:** Fallback machine learning ensemble predicting NutriScore grades (A through E) when official grades are missing.
+- **Deterministic FSSAI Claim Verification:** Programmatically verifies front-of-pack marketing claims (e.g. "No Added Sugar", "Low Sodium", "High Protein") against statutory regulations.
+- **Healthier Product Alternatives:** Suggests nutritionally superior alternatives within the same food category with clear percentage-based nutritional advantages.
+- **Consumption Diary (Scan ≠ Eat):** Explicit daily food intake logging separate from scan history, tracking calorie budgets and nutrient adherence.
+- **Cross-Platform Client:** Public web deployment and mobile application built with Expo SDK 54, runnable on iOS/Android via Expo Go or packageable as an Android APK via EAS.
+
+---
+
+## Live Deployment
+
+| Service | URL |
+|---|---|
+| Web app | https://foodscanner-mobile.onrender.com |
+| Backend API | https://foodscanner-ai.onrender.com |
+| API health check | https://foodscanner-ai.onrender.com/health |
+| Swagger docs | https://foodscanner-ai.onrender.com/docs |
+
+> **Status:** The public frontend and backend are deployed on Render and connected. The project is structured as a monorepo so the API, ML pipeline, and mobile client can evolve together while keeping deployment configuration centralized.
 
 ---
 
@@ -29,7 +56,7 @@ ml-scanner-project/
 │   ├── api/main.py                 # FastAPI application, CORS, route definitions
 │   ├── database/                   # SQLite/PostgreSQL schemas, ORM models, auto-migrations
 │   ├── ml_model/                   # NutriScore classification pipeline and model artifacts
-│   ├── services/                   # Business logic (scoring, OFF, OCR, auth, recommendations)
+│   ├── services/                   # Business logic (scoring, OFF, OCR, auth, recommendations, claim verification)
 │   ├── datasets/                   # Packaged food dataset tables (Indian + OFF)
 │   └── tests/                      # Pytest test suite (Batches 1 to 4)
 │
@@ -46,7 +73,22 @@ ml-scanner-project/
 
 ---
 
-## 3. Component Details
+## 3. Technology Stack
+
+| Layer | Technologies |
+|---|---|
+| Mobile/Web | Expo SDK 54, React Native 0.81.5, React 19.1.0, React Navigation, Axios |
+| Backend | FastAPI, Python 3.10+, Uvicorn |
+| Database | Dual support: SQLite (local development and portable tests) & PostgreSQL (production), SQLAlchemy ORM |
+| Authentication | JWT Bearer tokens, salted bcrypt password hashing (`passlib`) |
+| Data Integration | OpenFoodFacts API, curated Indian packaged foods dataset |
+| ML / Scoring | scikit-learn, XGBoost, feature engineering (50+ features), health score explainers |
+| OCR Engine | EasyOCR / Tesseract OCR (`pytesseract`) |
+| Deployment | Render static site + Render web service via root `render.yaml` |
+
+---
+
+## 4. Component Details
 
 ### A. Core Backend & Database
 - **Framework:** FastAPI with Uvicorn.
@@ -65,10 +107,15 @@ ml-scanner-project/
 - **Diet-Aware Scoring:** Adapts penalties based on user profile (e.g., low-sodium diet triples salt penalties).
 - **Ingredient & Additive Intelligence:** Token boundary matching (`\b`) and longest-match-first sorting prevents substring false positives (e.g., "msg" inside "message") and eliminates duplicate flag reporting.
 
-### C. Machine Learning Pipeline
-- **NutriScore Classification:** Trained ensemble/scikit-learn models (`ensemble_model.pkl`, `model.pkl`) predict missing NutriScore grades (A through E).
-- **Validation Metrics:** Evaluated on held-out test data with **82.69% held-out test accuracy** (documented baseline test metric; not a live production guarantee).
+### C. ML Component: NutriScore Prediction
+When a product has no NutriScore grade, the API predicts one (A through E) from its nutrition values.
+- **Dataset:** ~50,000 products collected from the OpenFoodFacts API plus a curated Indian packaged-foods dataset (`datasets/indian_foods/indian_packaged_foods.csv`). Labels are the real `nutriscore_grade` values published by OpenFoodFacts.
+- **Models:** Random Forest, Gradient Boosting, XGBoost, and SVM, with a soft-voting ensemble (`foodscanner-ai/ml_model/advanced_training.py`, producing `ensemble_model.pkl` with backward-compatible fallback to `model.pkl`).
+- **Validation Metrics & Measured Accuracy:**
+  - The committed evaluation (`foodscanner-ai/reports/evaluation_results.json`) shows **about 88% accuracy** (macro F1 about 0.86) for the Random Forest on a held-out stratified 20% split.
+  - Documented baseline test suite evaluation metric: **82.69% held-out test accuracy** (documented baseline test metric; not a live production guarantee).
 - **Inference Determinism:** Explicit feature validation and class probability distributions; missing/corrupted models raise explicit `ModelArtifactError` rather than silently failing to heuristic fallbacks.
+- **Limitations:** NutriScore is itself a deterministic formula over nutrition values, so this model learns to approximate that formula rather than discovering new health signal. It is useful as a fallback when a grade is missing. It is not a medical or dietary judgment. The separate user-facing "health score" shown to users comes from rule-based logic in `services/food_health_score.py`, which is unit tested.
 
 ### D. OpenFoodFacts Integration
 - Resilient multi-tier product lookup with automatic failover.
@@ -115,7 +162,7 @@ ml-scanner-project/
 
 ---
 
-## 4. API Specification
+## 5. API Specification
 
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
@@ -145,108 +192,190 @@ ml-scanner-project/
 
 ---
 
-## 5. Local Setup & Execution
+## 6. Local Setup & Execution
 
 ### Prerequisites
 - Python 3.10+ (Python 3.11 / 3.12 supported)
 - Node.js 18+ (Node 20+ recommended)
 - Tesseract OCR (optional locally, required for pytesseract engine)
+- Git
+
+### Clone the Repository
+```bash
+# Clone the upstream repository or your fork:
+git clone https://github.com/Sandesh5550/ml-scanner-project.git
+cd ml-scanner-project
+```
 
 ### Backend Setup (`foodscanner-ai`)
-```bash
-# 1. Navigate to backend directory
-cd foodscanner-ai
 
-# 2. Create and activate virtual environment
-python -m venv .venv
-.venv\Scripts\activate   # Windows
-# source .venv/bin/activate  # macOS/Linux
+1. **Navigate to the backend directory:**
+   ```bash
+   cd foodscanner-ai
+   ```
 
-# 3. Install dependencies
-pip install -r requirements.txt
+2. **Create and activate a virtual environment:**
+   - **On macOS / Linux:**
+     ```bash
+     python3 -m venv .venv
+     source .venv/bin/activate
+     ```
+   - **On Windows (Command Prompt / PowerShell):**
+     ```cmd
+     python -m venv .venv
+     .venv\Scripts\activate
+     ```
 
-# 4. Configure local environment (REQUIRED)
-cp .env.example .env
-# Open .env and set SECRET_KEY (e.g. python -c "import secrets; print(secrets.token_hex(32))")
-# NOTE: .env must NEVER be committed to Git.
-# Keep AI_PROVIDER=mock for reliable offline/demo testing unless an external LLM is configured.
+3. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-# 5. Initialize database
-python -m database.init_db
+4. **Configure local environment (REQUIRED):**
+   - **On macOS / Linux:**
+     ```bash
+     cp .env.example .env
+     ```
+   - **On Windows:**
+     ```cmd
+     copy .env.example .env
+     ```
+   - Open `.env` and set `SECRET_KEY`. You can generate a secure key with:
+     ```bash
+     python -c "import secrets; print(secrets.token_hex(32))"
+     ```
+   - *Note: `.env` must NEVER be committed to Git. Keep `AI_PROVIDER=mock` for reliable offline/demo testing unless an external LLM is configured.*
 
-# 6. Start API server
-python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+5. **Initialize the database:**
+   ```bash
+   python -m database.init_db
+   ```
+   *(On Windows, you can also run `py -m database.init_db`)*
 
-# 7. Swagger / Demo Testing Workflow:
-# - Open interactive documentation at http://127.0.0.1:8000/docs
-# - Register a demo user via POST /register or login via POST /login
-# - Copy the returned "access_token"
-# - Click the green "Authorize" button in Swagger and paste the token
-# - Execute protected endpoints (e.g. POST /scan, POST /chat, GET /today)
-```
+6. **Start the API development server:**
+   ```bash
+   python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+   ```
+
+7. **Swagger API Testing Workflow:**
+   - Open interactive documentation at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+   - Register a demo user via `POST /register` or login via `POST /login`
+   - Copy the returned `access_token`
+   - Click the green **Authorize** button in Swagger and paste the token
+   - Execute protected endpoints (e.g. `POST /scan`, `POST /chat`, `GET /today`)
 
 ### Mobile Setup (`foodscanner-mobile`)
-```bash
-# 1. Navigate to mobile directory
-cd foodscanner-mobile
 
-# 2. Install dependencies
-npm install
+1. **Navigate to the mobile directory:**
+   ```bash
+   cd foodscanner-mobile
+   ```
 
-# 3. Configure local environment (optional for LAN auto-discovery)
-cp .env.example .env
+2. **Install dependencies:**
+   ```bash
+   npm install
+   ```
 
-# 4. Start Expo development server
-npx expo start --lan
-```
-*Note: Point your Expo Go app (iOS Camera or Android Expo Go) at the QR code generated by Expo. Ensure your mobile device and computer are on the same Wi-Fi network.*
+3. **Configure local environment:**
+   - **On macOS / Linux:**
+     ```bash
+     cp .env.example .env
+     ```
+   - **On Windows:**
+     ```cmd
+     copy .env.example .env
+     ```
+   - Open `.env` and configure the backend URL:
+     - **For local testing on Wi-Fi:** set to your machine's LAN IP:
+       ```bash
+       EXPO_PUBLIC_API_BASE_URL=http://YOUR_LOCAL_IP:8000
+       ```
+     - **For public cloud testing:** use the deployed backend:
+       ```bash
+       EXPO_PUBLIC_API_BASE_URL=https://foodscanner-ai.onrender.com
+       ```
+     - *If left unset for local development, the client dynamically resolves your host machine's LAN IP via Expo debug manifests.*
+
+4. **Start the Expo development server:**
+   - **LAN mode (recommended for local devices on same Wi-Fi):**
+     ```bash
+     npx expo start --lan
+     ```
+   - **Tunnel mode (for remote devices / isolated Wi-Fi):**
+     ```bash
+     npx expo start --tunnel
+     ```
+
+*Note: Open the Expo Go app on your physical device (iOS Camera or Android Expo Go app) and scan the QR code. Ensure your phone and development computer are on the same local network when using `--lan`.*
 
 ---
 
-## 6. Automated Testing
+## 7. Deployment Notes
+
+This repository includes a root `render.yaml` blueprint for deploying both services:
+
+- `foodscanner-ai` runs as a Render web service (Python / Uvicorn).
+- `foodscanner-mobile` runs as a Render static site built from Expo web export (`npx expo export -p web`).
+- The mobile/web app must use a public backend URL (`https://foodscanner-ai.onrender.com`) for real users; local LAN IPs only work when connected to the developer's local Wi-Fi.
+
+---
+
+## 8. Automated Testing
 
 ### Backend Test Suite (Pytest)
-The test suite can be run from **either** the repository root or the `foodscanner-ai` directory:
 
-```bash
-# From repository root:
-.\foodscanner-ai\.venv\Scripts\python.exe -m pytest foodscanner-ai/tests -v
+The test suite can be executed from either the repository root or within the `foodscanner-ai` directory:
 
-# From foodscanner-ai directory:
-cd foodscanner-ai
-python -m pytest tests -v
-```
-**Results:** **57 passed**, 0 failed, 0 errors.
+- **From repository root (macOS / Linux):**
+  ```bash
+  ./foodscanner-ai/.venv/bin/pytest foodscanner-ai/tests -v
+  ```
+- **From repository root (Windows):**
+  ```cmd
+  .\foodscanner-ai\.venv\Scripts\python.exe -m pytest foodscanner-ai/tests -v
+  ```
+- **From `foodscanner-ai` directory (with active venv):**
+  ```bash
+  cd foodscanner-ai
+  pytest tests -v
+  ```
+
+**Existing Backend Test Results:** **57 passed**, 0 failed, 0 errors.
 
 ### Mobile Test Suite (Node.js Native Test Runner)
+
+Run the pure-logic mobile test suite from `foodscanner-mobile`:
+
 ```bash
-# From foodscanner-mobile directory:
 cd foodscanner-mobile
 npm test
 # or:
 node --test tests/
 ```
-**Results:** **5 passed**, 0 failed across 2 suites.
+
+**Existing Mobile Test Results:** **5 passed**, 0 failed across 2 suites.
 
 ---
 
-## 7. Environment Configuration Reference
+## 9. Environment Configuration Reference
 
 | Variable | Location | Description | Default |
 |---|---|---|---|
 | `DATABASE_URL` | `foodscanner-ai/.env` | SQLite/PostgreSQL connection string | `sqlite:///database/foodscanner.db` |
-| `SECRET_KEY` | `foodscanner-ai/.env` | JWT token signature secret | Required |
+| `SECRET_KEY` | `foodscanner-ai/.env` | JWT token signature secret | *Required* |
 | `FOODSCANNER_OCR_ENGINE` | `foodscanner-ai/.env` | Preferred OCR engine (`easyocr` or `tesseract`) | `easyocr` |
 | `ALLOWED_ORIGINS` | `foodscanner-ai/.env` | Comma-separated allowed CORS origins | Local dev origins |
 | `EXPO_PUBLIC_API_BASE_URL` | `foodscanner-mobile/.env` | Explicit backend API URL override | Dynamic LAN or Render |
 
 ---
 
-## 8. Current Limitations (Phase 2 State)
+## 10. Current Limitations (Phase 2 State)
+
 1. **Health Claim Verification Scope:** Phase 2 Batch 5 supports 7 core FSSAI claims ("No Added Sugar", "Sugar Free", "Low Sodium", "High Protein", "High Fibre", "Low Fat", "Zero Trans Fat"). Expansion to vitamin/mineral micronutrient claims and Front-of-Pack mobile verification badges are scheduled for subsequent iterations.
 2. **OCR 2.0:** OCR parses nutrition tables; multi-label packaging bounding boxes and FSSAI license OCR are not yet supported (scheduled for subsequent Phase 2 batches).
 3. **Mobile Compare UI:** While `/compare` and recommendation engines exist in the backend, the mobile client does not yet include a dedicated comparison screen (scheduled for subsequent Phase 2 batches).
 4. **Physical Device Validation:** The mobile app has been validated via Expo dev server, LAN configuration, and automated unit tests. Physical iPhone field testing requires an in-person device on the local network.
+5. **NutriScore ML Fallback Scope:** NutriScore is a deterministic mathematical formula over declared nutrition values; the ML model approximates this formula as a fallback when published grades are missing, rather than inferring new clinical or dietary outcomes.
 
 ---
 
