@@ -200,6 +200,10 @@ def compute_diet_aware_score(product: dict, diet_type: str | None) -> dict:
     score = base["health_score"]
     notes: list[str] = []
     diabetic_no_safe = False
+    diabetic_force_avoid = False
+    low_sodium_no_safe = False
+    vegan_force_avoid = False
+    vegetarian_force_avoid = False
 
     if not diet_type:
         return base
@@ -210,33 +214,55 @@ def compute_diet_aware_score(product: dict, diet_type: str | None) -> dict:
         sugar = _to_float(product.get("sugar"))
         carbs = _to_float(product.get("carbs"))
         score += _sugar_penalty(sugar)  # double penalty
-        if sugar is not None and sugar > 5:
+        if sugar is not None and sugar > 15:
+            diabetic_force_avoid = True
+            notes.append("High sugar (>15g/100g): AVOID for diabetic diet")
+        elif sugar is not None and sugar > 5:
             diabetic_no_safe = True
             notes.append("Sugar > 5g: not SAFE for diabetic diet")
         if carbs is not None and carbs > 30:
             score -= 15
             notes.append("High carbs for diabetic diet")
+        ingredients = str(product.get("ingredients") or "").lower()
+        if _contains_any(ingredients, ["high fructose corn syrup", "corn syrup", "maltodextrin", "dextrose", "glucose syrup"]):
+            score -= 15
+            notes.append("Contains rapid-spiking refined syrups/sweeteners")
         notes.append("Sugar penalty doubled for diabetic diet")
 
     elif dt == "vegan":
         ingredients = str(product.get("ingredients") or "").lower()
-        if _contains_any(ingredients, ["milk", "egg", "meat", "chicken", "fish", "butter", "cheese", "honey"]):
+        non_vegan = [
+            "milk", "dairy", "egg", "meat", "chicken", "fish", "butter", "cheese",
+            "honey", "whey", "casein", "gelatin", "carmine", "lard", "tallow",
+            "yogurt", "ghee", "curd", "paneer", "shellfish", "prawn", "crab"
+        ]
+        if _contains_any(ingredients, non_vegan):
             score -= 30
-            notes.append("Contains non-vegan ingredients")
+            vegan_force_avoid = True
+            notes.append("Contains non-vegan animal-derived ingredients: AVOID for vegan diet")
         else:
             notes.append("Compatible with vegan diet")
 
     elif dt == "vegetarian":
         ingredients = str(product.get("ingredients") or "").lower()
-        if _contains_any(ingredients, ["meat", "chicken", "fish", "pork", "beef", "lamb"]):
+        non_veg = [
+            "meat", "chicken", "fish", "pork", "beef", "lamb", "gelatin", "lard",
+            "tallow", "shrimp", "prawn", "crab", "lobster", "bacon", "poultry",
+            "seafood", "anchovy"
+        ]
+        if _contains_any(ingredients, non_veg):
             score -= 30
-            notes.append("Contains non-vegetarian meat")
+            vegetarian_force_avoid = True
+            notes.append("Contains non-vegetarian meat/gelatin: AVOID for vegetarian diet")
         else:
             notes.append("Compatible with vegetarian diet")
 
     elif dt == "low_sodium":
         salt = _to_float(product.get("salt"))
-        score += _salt_penalty(salt)  # triple penalty
+        score += 2 * _salt_penalty(salt)  # triple penalty (1x in base + 2x additional = 3x total)
+        if salt is not None and salt > 1.5:
+            low_sodium_no_safe = True
+            notes.append("High salt (>1.5g/100g) exceeds low-sodium guidelines")
         notes.append("Salt penalty tripled for low-sodium diet")
 
     else:
@@ -252,7 +278,11 @@ def compute_diet_aware_score(product: dict, diet_type: str | None) -> dict:
     else:
         decision = "AVOID"
 
-    if diabetic_no_safe and decision == "SAFE":
+    if diabetic_force_avoid or vegan_force_avoid or vegetarian_force_avoid:
+        decision = "AVOID"
+    elif diabetic_no_safe and decision == "SAFE":
+        decision = "MODERATE"
+    elif low_sodium_no_safe and decision == "SAFE":
         decision = "MODERATE"
 
     diet_note = "; ".join(notes) if notes else None

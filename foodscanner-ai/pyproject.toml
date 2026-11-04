@@ -26,6 +26,7 @@ dependencies = [
   "easyocr",
   "email-validator",
   "tqdm",
+  "prometheus-client",
 ]
 
 [tool.setuptools]

@@ -162,12 +162,27 @@ def explain_score(product: dict[str, Any], diet_type: str | None) -> dict[str, A
         parts.append(f"{step['impact']:+d}")
     calc_str = " ".join(parts) + f" = {final_score}"
 
+    positive_factors = [s for s in steps if s.get("impact", 0) > 0]
+    negative_factors = [s for s in steps if s.get("impact", 0) < 0]
+    neutral_factors = [s for s in steps if s.get("impact", 0) == 0]
+
+    pos_count = len(positive_factors)
+    neg_count = len(negative_factors)
+    summary = (
+        f"Base score: 100. Evaluated {len(steps)} nutritional and ingredient criteria. "
+        f"{neg_count} deduction(s) and {pos_count} bonus(es) result in a score of {final_score}/100 ({final_decision})."
+    )
+
     return {
         "product_name": product_name,
         "final_score": final_score,
         "final_decision": final_decision,
         "base_score": 100,
         "steps": steps,
+        "positive_factors": positive_factors,
+        "negative_factors": negative_factors,
+        "neutral_factors": neutral_factors,
+        "summary": summary,
         "score_calculation": calc_str,
         "diet_note": diet_note,
         "threshold_info": {

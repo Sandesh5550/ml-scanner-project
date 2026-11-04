@@ -49,7 +49,7 @@ def build_decision_reasons(product: dict, remaining_calories: float) -> list[str
 
     if sugar is not None and sugar > 20:
         reasons.append("high sugar content")
-    if salt is not None and salt > 2:
+    if salt is not None and salt > 1.5:
         reasons.append("high sodium level")
     if fat is not None and fat > 25:
         reasons.append("high fat content")

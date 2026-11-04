@@ -74,19 +74,6 @@ def _analyze_and_log(
         user_id=int(user_id),
     )
 
-    db_service.log_food_consumption(
-        db,
-        barcode=str(product.get("barcode") or ""),
-        product_name=str(product.get("product_name") or ""),
-        calories=(product.get("nutrition") or {}).get("calories") if isinstance(product.get("nutrition"), dict) else product.get("calories"),
-        user_id=int(user_id),
-    )
-
-    today_calories = get_today_calories(db, user_id=int(user_id))
-    remaining_calories = get_remaining_calories(user_profile, db, user_id=int(user_id))
-    product["today_calories_consumed"] = today_calories
-    product["remaining_calories"] = remaining_calories
-
     return product
 
 

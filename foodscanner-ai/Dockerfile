@@ -4,7 +4,7 @@ WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PORT=7860
+ENV PORT=8000
 ENV FOODSCANNER_OCR_ENGINE=tesseract
 
 RUN apt-get update \
@@ -17,8 +17,16 @@ RUN apt-get update \
 COPY requirements-deploy.txt .
 RUN pip install --no-cache-dir -r requirements-deploy.txt
 
-COPY . .
+RUN groupadd -g 1001 appuser \
+    && useradd -u 1001 -g appuser -s /bin/sh -m appuser
 
-EXPOSE 7860
+COPY --chown=appuser:appuser . .
 
-CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT}"]
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request, os; port = os.environ.get('PORT', '8000'); urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=4)" || exit 1
+
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT}"]

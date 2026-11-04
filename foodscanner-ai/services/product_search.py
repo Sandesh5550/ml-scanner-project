@@ -1,18 +1,101 @@
 from __future__ import annotations
 
+import hashlib
+import logging
 from pathlib import Path
-from typing import Any
+import re
+import threading
+from typing import Any, Dict, List, Optional
 
+import httpx
 import pandas as pd
-import requests
 from rapidfuzz import fuzz
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from services import db_service
+logger = logging.getLogger(__name__)
 
-
-INDIAN_DATASET_PATH = Path(__file__).resolve().parents[1] / "datasets" / "indian_foods" / "indian_packaged_foods.csv"
+DATASETS_DIR = Path(__file__).resolve().parents[1] / "datasets"
+INDIAN_DATASET_PATH = DATASETS_DIR / "indian_foods" / "indian_packaged_foods.csv"
+OPENFOODFACTS_CLEANED_PATH = DATASETS_DIR / "large_openfoodfacts_cleaned.csv"
 OPENFOODFACTS_SEARCH_URL = "https://world.openfoodfacts.org/cgi/search.pl"
+
+_OPENFOODFACTS_DF: Optional[pd.DataFrame] = None
+_INDIAN_DATASET_DF: Optional[pd.DataFrame] = None
+_DF_LOCK = threading.Lock()
+
+KNOWN_ACRONYMS = {
+    "KFC", "MDH", "ITC", "IBM", "BLT", "DKNY", "GMC", "USA", "UK", "FSSAI",
+    "B&G", "M&S", "LG", "BMW", "BBQ"
+}
+
+
+def normalize_brand(brand_raw: Any) -> Optional[str]:
+    """Normalize brand strings cleanly while preserving intentional capitalization.
+
+    Rules:
+    - Multiple comma-separated brands (common in OpenFoodFacts) take the primary brand.
+    - Intentional mixed-case brands (e.g. 'iPhone', 'McVitie's', 'Lay's', 'Parle-G', 'Bio Choice')
+      are strictly preserved and NOT blindly title-cased.
+    - Short uppercase acronyms (<= 3 letters or in KNOWN_ACRONYMS, e.g. 'KFC', 'MDH', 'M&S')
+      remain uppercase.
+    - Pure uppercase words (e.g. 'AMUL', 'BRITANNIA', 'CADBURY', 'NESTLE') are normalized
+      to title/capital case ('Amul', 'Britannia', 'Cadbury', 'Nestle'), correctly preserving
+      lowercase possessives (e.g. "KELLOGG'S" -> "Kellogg's").
+    - Pure lowercase words (e.g. 'liebig', 'wolf brand') are capitalized ('Liebig', 'Wolf Brand').
+    """
+    if brand_raw is None:
+        return None
+    b = str(brand_raw).strip()
+    if not b:
+        return None
+
+    # Take first brand if comma-separated
+    if "," in b:
+        b = b.split(",")[0].strip()
+        if not b:
+            return None
+
+    # Check for mixed case: both upper and lower letters present
+    has_upper = any(c.isupper() for c in b)
+    has_lower = any(c.islower() for c in b)
+
+    # 1. Preserve meaningful mixed-case (e.g. iPhone, McVitie's, Lay's, Parle-G, Bio Choice, Coca-Cola)
+    if has_upper and has_lower:
+        return b
+
+    # 2. Preserve short uppercase acronyms (e.g. KFC, MDH, M&S, ITC, LG, BMW)
+    alpha_letters = "".join(c for c in b if c.isalpha())
+    if b.isupper() and (len(alpha_letters) <= 3 or b in KNOWN_ACRONYMS):
+        return b
+
+    # 3. Format all-caps (e.g. AMUL, BRITANNIA) or all-lowercase (e.g. liebig, wolf brand)
+    words = b.split()
+    formatted = []
+    for w in words:
+        w_alpha = "".join(c for c in w if c.isalpha())
+        if w.isupper() and (len(w_alpha) <= 3 or w in KNOWN_ACRONYMS):
+            formatted.append(w)
+        elif "'" in w:
+            parts = w.split("'", 1)
+            formatted.append(parts[0].capitalize() + "'" + parts[1].lower())
+        elif "-" in w:
+            parts = w.split("-")
+            formatted.append("-".join(p.capitalize() for p in parts))
+        else:
+            formatted.append(w.capitalize())
+
+    return " ".join(formatted)
+
+
+def _to_optional_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        f = float(value)
+        return None if f != f else round(f, 2)
+    except (TypeError, ValueError):
+        return None
 
 
 def _normalize_name(value: Any) -> str:
@@ -32,85 +115,289 @@ def _similarity(query: str, name: str) -> float:
     return (token_set + token_sort) / 2.0
 
 
-def _dedupe_and_limit(items: list[dict], limit: int = 10) -> list[dict]:
-    seen: set[str] = set()
-    out: list[dict] = []
-    for item in items:
-        name = _normalize_name(item.get("product_name"))
-        if not name:
-            continue
-        key = name.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({"product_name": name, "source": item.get("source")})
-        if len(out) >= limit:
-            break
-    return out
+def get_openfoodfacts_df() -> Optional[pd.DataFrame]:
+    global _OPENFOODFACTS_DF
+    if _OPENFOODFACTS_DF is not None:
+        return _OPENFOODFACTS_DF
+
+    with _DF_LOCK:
+        if _OPENFOODFACTS_DF is not None:
+            return _OPENFOODFACTS_DF
+
+        csv_path = OPENFOODFACTS_CLEANED_PATH
+        if not csv_path.exists():
+            csv_path = DATASETS_DIR / "large_openfoodfacts.csv"
+        if not csv_path.exists():
+            return None
+
+        try:
+            df = pd.read_csv(
+                csv_path,
+                dtype={"code": "string", "product_name": "string", "brands": "string", "ingredients_text": "string"},
+                low_memory=False,
+                encoding_errors="replace",
+            )
+            _OPENFOODFACTS_DF = df
+            return df
+        except Exception as exc:
+            logger.warning("Failed to load local OpenFoodFacts dataset: %s", exc)
+            return None
 
 
-def _rank_and_dedupe(items: list[dict], limit: int = 10) -> list[dict]:
-    best: dict[str, dict] = {}
-    for item in items:
-        name = _normalize_name(item.get("product_name"))
-        if not name:
-            continue
-        key = name.lower()
-        score = float(item.get("_score") or 0.0)
+def get_indian_dataset_df() -> Optional[pd.DataFrame]:
+    global _INDIAN_DATASET_DF
+    if _INDIAN_DATASET_DF is not None:
+        return _INDIAN_DATASET_DF
 
-        existing = best.get(key)
-        if existing is None or float(existing.get("_score") or 0.0) < score:
-            best[key] = {"product_name": name, "source": item.get("source"), "_score": score}
+    with _DF_LOCK:
+        if _INDIAN_DATASET_DF is not None:
+            return _INDIAN_DATASET_DF
 
-    ranked = sorted(best.values(), key=lambda x: float(x.get("_score") or 0.0), reverse=True)
-    return [{"product_name": r["product_name"], "source": r.get("source"), "similarity_score": round(r["_score"], 1)} for r in ranked[:limit]]
+        if not INDIAN_DATASET_PATH.exists():
+            return None
+
+        try:
+            df = pd.read_csv(
+                INDIAN_DATASET_PATH,
+                dtype={"product_name": "string", "brand": "string"},
+                low_memory=False,
+                encoding_errors="replace",
+            )
+            _INDIAN_DATASET_DF = df
+            return df
+        except Exception as exc:
+            logger.warning("Failed to load local Indian packaged foods dataset: %s", exc)
+            return None
 
 
-def _search_local_db(db: Session, query: str, limit: int = 10) -> list[dict]:
+def _search_local_db(db: Session, query: str, limit: int = 30) -> List[Dict[str, Any]]:
     q = query.strip()
     if not q:
         return []
 
-    candidates = db_service.get_product_name_candidates(db, limit=200)
+    stmt = text("""
+        SELECT p.id, p.barcode, p.product_name, p.brand, p.nutriscore, p.ingredients,
+               n.calories, n.fat, n.sugar, n.salt, n.protein, n.fiber, n.carbs
+        FROM products p
+        LEFT JOIN nutrition n ON n.product_id = p.id
+        WHERE p.product_name LIKE :term ESCAPE '/'
+           OR p.brand LIKE :term ESCAPE '/'
+           OR p.ingredients LIKE :term ESCAPE '/'
+        LIMIT :sql_limit
+    """)
 
-    scored: list[tuple[float, dict]] = []
-    for name in candidates:
-        product_name = _normalize_name(name)
-        score = _similarity(q, product_name)
-        if score >= 65:
-            scored.append((score, {"product_name": product_name, "source": "local", "_score": score}))
+    # Escape LIKE wildcards so user input is treated as literal search string
+    escaped_q = q.replace("/", "//").replace("%", "/%").replace("_", "/_")
+    term = f"%{escaped_q}%"
+    try:
+        rows = db.execute(stmt, {"term": term, "sql_limit": max(limit * 3, 50)}).fetchall()
+    except Exception as e:
+        logger.error("Database search error: %s", e)
+        return []
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [item for _, item in scored[:limit]]
+    q_lower = q.lower()
+    scored: List[Dict[str, Any]] = []
+
+    for r in rows:
+        name = _normalize_name(r.product_name)
+        brand = normalize_brand(r.brand)
+        ingr = _normalize_name(r.ingredients)
+        if not name:
+            continue
+
+        name_lower = name.lower()
+        brand_lower = (brand or "").lower()
+
+        # Relevance scoring
+        if q_lower == name_lower:
+            score = 100.0
+        elif name_lower.startswith(q_lower):
+            score = 95.0
+        elif brand_lower and (brand_lower == q_lower or brand_lower.startswith(q_lower)):
+            score = 90.0
+        elif q_lower in name_lower:
+            score = 85.0
+        elif brand_lower and q_lower in brand_lower:
+            score = 80.0
+        elif ingr and q_lower in ingr.lower():
+            score = 75.0
+        else:
+            sim = _similarity(q, name)
+            if sim < 60.0:
+                continue
+            score = sim
+
+        barcode = str(r.barcode or "")
+        src = "indian_dataset" if barcode.startswith("IND-") else "local_db"
+
+        scored.append({
+            "barcode": barcode,
+            "product_name": name,
+            "brand": brand or None,
+            "nutriscore": str(r.nutriscore).lower() if r.nutriscore else None,
+            "ingredients": ingr or None,
+            "nutrition": {
+                "calories": _to_optional_float(r.calories),
+                "fat": _to_optional_float(r.fat),
+                "sugar": _to_optional_float(r.sugar),
+                "salt": _to_optional_float(r.salt),
+                "protein": _to_optional_float(r.protein),
+                "fiber": _to_optional_float(r.fiber),
+                "carbs": _to_optional_float(r.carbs),
+            },
+            "source": src,
+            "_score": score,
+        })
+
+    scored.sort(key=lambda x: x["_score"], reverse=True)
+    return scored[:limit]
 
 
-def _search_indian_dataset(query: str, limit: int = 10) -> list[dict]:
-    q = query.strip().lower()
+def _search_indian_dataset(query: str, limit: int = 30) -> List[Dict[str, Any]]:
+    q = query.strip()
     if not q:
         return []
-    if not INDIAN_DATASET_PATH.exists():
+
+    df = get_indian_dataset_df()
+    if df is None:
         return []
 
+    pat = re.escape(q)
     try:
-        df = pd.read_csv(INDIAN_DATASET_PATH)
-    except Exception:
+        cond = (
+            df["product_name"].str.contains(pat, case=False, na=False)
+            | df["brand"].str.contains(pat, case=False, na=False)
+        )
+        subset = df[cond].head(limit * 2)
+    except Exception as e:
+        logger.warning("Indian dataset regex error: %s", e)
         return []
 
-    if "product_name" not in df.columns:
+    q_lower = q.lower()
+    results: List[Dict[str, Any]] = []
+
+    for _, r in subset.iterrows():
+        name = _normalize_name(r.get("product_name"))
+        brand = normalize_brand(r.get("brand"))
+        if not name:
+            continue
+
+        name_lower = name.lower()
+        brand_lower = (brand or "").lower()
+
+        if q_lower == name_lower:
+            score = 100.0
+        elif name_lower.startswith(q_lower):
+            score = 95.0
+        elif brand_lower and (brand_lower == q_lower or brand_lower.startswith(q_lower)):
+            score = 90.0
+        elif q_lower in name_lower:
+            score = 85.0
+        elif brand_lower and q_lower in brand_lower:
+            score = 80.0
+        else:
+            sim = _similarity(q, name)
+            if sim < 60.0:
+                continue
+            score = sim
+
+        name_hash = hashlib.md5(name.lower().encode("utf-8")).hexdigest()
+        synthetic_barcode = f"IND-{name_hash}"
+
+        results.append({
+            "barcode": synthetic_barcode,
+            "product_name": name,
+            "brand": brand,
+            "nutriscore": None,
+            "ingredients": None,
+            "nutrition": {
+                "calories": _to_optional_float(r.get("calories")),
+                "fat": _to_optional_float(r.get("fat")),
+                "sugar": _to_optional_float(r.get("sugar")),
+                "salt": _to_optional_float(r.get("salt")),
+                "protein": _to_optional_float(r.get("protein")),
+                "fiber": _to_optional_float(r.get("fiber")),
+                "carbs": _to_optional_float(r.get("carbs")),
+            },
+            "source": "indian_dataset",
+            "_score": score,
+        })
+
+    results.sort(key=lambda x: x["_score"], reverse=True)
+    return results[:limit]
+
+
+def _search_openfoodfacts_dataset(query: str, limit: int = 30) -> List[Dict[str, Any]]:
+    q = query.strip()
+    if not q:
         return []
 
-    scored: list[tuple[float, dict]] = []
-    for _, row in df.iterrows():
-        name = _normalize_name(row.get("product_name"))
-        score = _similarity(q, name)
-        if score >= 65:
-            scored.append((score, {"product_name": name, "source": "indian_dataset", "_score": score}))
+    df = get_openfoodfacts_df()
+    if df is None:
+        return []
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [item for _, item in scored[:limit]]
+    pat = re.escape(q)
+    try:
+        cond = (
+            df["product_name"].str.contains(pat, case=False, na=False)
+            | df["brands"].str.contains(pat, case=False, na=False)
+            | df["ingredients_text"].str.contains(pat, case=False, na=False)
+        )
+        subset = df[cond].head(limit * 2)
+    except Exception as e:
+        logger.warning("Dataset search regex error: %s", e)
+        return []
+
+    q_lower = q.lower()
+    results: List[Dict[str, Any]] = []
+
+    for _, r in subset.iterrows():
+        name = _normalize_name(r.get("product_name"))
+        brand = normalize_brand(r.get("brands"))
+        ingr = _normalize_name(r.get("ingredients_text"))
+        if not name:
+            continue
+
+        name_lower = name.lower()
+        brand_lower = (brand or "").lower()
+
+        if q_lower == name_lower:
+            score = 98.0
+        elif name_lower.startswith(q_lower):
+            score = 92.0
+        elif brand_lower and (brand_lower == q_lower or brand_lower.startswith(q_lower)):
+            score = 88.0
+        elif q_lower in name_lower:
+            score = 82.0
+        elif brand_lower and q_lower in brand_lower:
+            score = 78.0
+        else:
+            score = 70.0
+
+        results.append({
+            "barcode": str(r.get("code") or ""),
+            "product_name": name,
+            "brand": brand or None,
+            "nutriscore": str(r.get("nutriscore_grade") or "").lower() or None,
+            "ingredients": ingr or None,
+            "nutrition": {
+                "calories": _to_optional_float(r.get("calories")),
+                "fat": _to_optional_float(r.get("fat")),
+                "sugar": _to_optional_float(r.get("sugar")),
+                "salt": _to_optional_float(r.get("salt")),
+                "protein": _to_optional_float(r.get("protein")),
+                "fiber": _to_optional_float(r.get("fiber")),
+                "carbs": _to_optional_float(r.get("carbs")),
+            },
+            "source": "openfoodfacts_dataset",
+            "_score": score,
+        })
+
+    results.sort(key=lambda x: x["_score"], reverse=True)
+    return results[:limit]
 
 
-def _search_openfoodfacts(query: str, limit: int = 10) -> list[dict]:
+def _search_openfoodfacts_remote(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     q = query.strip()
     if not q:
         return []
@@ -120,38 +407,124 @@ def _search_openfoodfacts(query: str, limit: int = 10) -> list[dict]:
         "search_simple": 1,
         "action": "process",
         "json": 1,
+        "page_size": limit,
     }
 
     try:
-        resp = requests.get(OPENFOODFACTS_SEARCH_URL, params=params, timeout=10)
-        resp.raise_for_status()
+        resp = httpx.get(
+            OPENFOODFACTS_SEARCH_URL,
+            params=params,
+            timeout=httpx.Timeout(2.5, connect=1.5),
+            headers={"User-Agent": "Pramaan-FoodScanner/1.0 (+https://github.com/pramaan)"},
+        )
+        if resp.status_code != 200:
+            return []
         data = resp.json()
     except Exception:
         return []
 
     products = data.get("products") or []
-    scored: list[tuple[float, dict]] = []
+    scored: List[Dict[str, Any]] = []
     for p in products:
         name = _normalize_name(p.get("product_name"))
         if not name:
             continue
         score = _similarity(q, name)
         if score >= 65:
-            scored.append((score, {"product_name": name, "source": "openfoodfacts", "_score": score}))
+            nutriments = p.get("nutriments") or {}
+            scored.append({
+                "barcode": str(p.get("code") or ""),
+                "product_name": name,
+                "brand": normalize_brand(p.get("brands")),
+                "nutriscore": str(p.get("nutriscore_grade") or "").lower() or None,
+                "ingredients": _normalize_name(p.get("ingredients_text")) or None,
+                "nutrition": {
+                    "calories": _to_optional_float(nutriments.get("energy-kcal_100g") or nutriments.get("energy_100g")),
+                    "fat": _to_optional_float(nutriments.get("fat_100g")),
+                    "sugar": _to_optional_float(nutriments.get("sugars_100g")),
+                    "salt": _to_optional_float(nutriments.get("salt_100g")),
+                    "protein": _to_optional_float(nutriments.get("proteins_100g")),
+                    "fiber": _to_optional_float(nutriments.get("fiber_100g")),
+                    "carbs": _to_optional_float(nutriments.get("carbohydrates_100g")),
+                },
+                "source": "openfoodfacts_api",
+                "_score": score,
+            })
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [item for _, item in scored[:limit]]
+    scored.sort(key=lambda x: x["_score"], reverse=True)
+    return scored[:limit]
 
 
-def search_products(db: Session, query: str) -> list[dict]:
+def _rank_and_dedupe(items: List[Dict[str, Any]], limit: int = 25) -> List[Dict[str, Any]]:
+    best: Dict[str, Dict[str, Any]] = {}
+
+    for item in items:
+        name = _normalize_name(item.get("product_name"))
+        if not name:
+            continue
+
+        barcode = str(item.get("barcode") or "").strip()
+        brand = str(item.get("brand") or "").strip().lower()
+
+        # Deduplication key: standard barcode or brand:product_name
+        if barcode and barcode.isdigit() and len(barcode) >= 8:
+            key = f"barcode:{barcode}"
+        elif brand:
+            key = f"brand_name:{brand}:{name.lower()}"
+        else:
+            key = f"name:{name.lower()}"
+
+        score = float(item.get("_score") or 0.0)
+        # Prioritize local database and Indian dataset over raw OpenFoodFacts
+        source = str(item.get("source") or "")
+        if source in ("local_db", "indian_dataset"):
+            score += 5.0
+
+        existing = best.get(key)
+        if existing is None or float(existing.get("_score") or 0.0) < score:
+            item_copy = dict(item)
+            item_copy["_score"] = score
+            best[key] = item_copy
+
+    ranked = sorted(best.values(), key=lambda x: float(x.get("_score") or 0.0), reverse=True)
+
+    output: List[Dict[str, Any]] = []
+    for r in ranked[:limit]:
+        output.append({
+            "barcode": r.get("barcode") or "",
+            "product_name": r["product_name"],
+            "brand": r.get("brand"),
+            "nutriscore": r.get("nutriscore"),
+            "ingredients": r.get("ingredients"),
+            "nutrition": r.get("nutrition") or {},
+            "source": r.get("source"),
+            "similarity_score": round(float(r.get("_score") or 0.0), 1),
+        })
+
+    return output
+
+
+def search_products(db: Session, query: str, limit: int = 25) -> List[Dict[str, Any]]:
     q = (query or "").strip()
     if not q:
         return []
 
-    combined: list[dict] = []
-    combined.extend(_search_local_db(db, q, limit=10))
-    combined.extend(_search_indian_dataset(q, limit=10))
-    combined.extend(_search_openfoodfacts(q, limit=30))
+    combined: List[Dict[str, Any]] = []
+    # 1. Database matches (local cache / persisted products)
+    local_matches = _search_local_db(db, q, limit=limit)
+    combined.extend(local_matches)
 
-    # Global rank by similarity, then dedupe keeping best score per product name.
-    return _rank_and_dedupe(combined, limit=10)
+    # 2. Canonical Indian packaged foods dataset (313 curated Indian products)
+    indian_matches = _search_indian_dataset(q, limit=limit)
+    combined.extend(indian_matches)
+
+    # 3. Local OpenFoodFacts dataset (37,444 cleaned rows)
+    dataset_matches = _search_openfoodfacts_dataset(q, limit=limit)
+    combined.extend(dataset_matches)
+
+    # 4. If very few results and query is 3+ chars, try remote OpenFoodFacts as fallback
+    if len(combined) < 3 and len(q) >= 3:
+        remote_matches = _search_openfoodfacts_remote(q, limit=10)
+        combined.extend(remote_matches)
+
+    return _rank_and_dedupe(combined, limit=limit)

@@ -1,30 +1,26 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   View,
   Text,
-  TextInput,
   TouchableOpacity,
   StyleSheet,
   Alert,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 import { getNetworkErrorMessage, login, register } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import {
+  PREMIUM_COLORS,
+  PREMIUM_SHADOWS,
+  PREMIUM_RADIUS,
+} from '../theme/premiumTheme';
+import { NeoButton, NeoInput, NeoTab } from '../components/neo';
 
-const C = {
-  cream: '#F5F2EC',
-  ink: '#1A1A17',
-  sage: '#4E8C52',
-  sageLight: '#C3D9C5',
-  amberLight: '#F0D9A8',
-  redLight: '#F0C8C0',
-  border: '#DDD8CE',
-  muted: '#888179',
-  white: '#FFFFFF',
-  red: '#B83C28',
-};
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function LoginScreen() {
   const { login: authLogin } = useAuth();
@@ -32,209 +28,317 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const isSubmittingRef = useRef(false);
+
+  const handleModeChange = (newMode) => {
+    setMode(newMode);
+    setErrorMessage('');
+  };
+
+  const handleEmailChange = (val) => {
+    setEmail(val);
+    if (errorMessage) setErrorMessage('');
+  };
+
+  const handlePasswordChange = (val) => {
+    setPassword(val);
+    if (errorMessage) setErrorMessage('');
+  };
 
   const onSubmit = async () => {
-    if (!email.trim() || !password) {
-      Alert.alert('Missing info', 'Email and password are required');
+    if (loading || isSubmittingRef.current) return;
+
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail) {
+      setErrorMessage('Please enter your email address.');
       return;
     }
 
+    if (!EMAIL_REGEX.test(trimmedEmail)) {
+      setErrorMessage('Please enter a valid email address (e.g. name@example.com).');
+      return;
+    }
+
+    if (!password) {
+      setErrorMessage('Please enter your password.');
+      return;
+    }
+
+    if (mode === 'register' && password.length < 6) {
+      setErrorMessage('Password must be at least 6 characters long.');
+      return;
+    }
+
+    isSubmittingRef.current = true;
     setLoading(true);
+    setErrorMessage('');
+
     try {
       let data;
       if (mode === 'register') {
-        data = await register(email.trim(), password, name.trim() || null);
+        data = await register(trimmedEmail, password, name.trim() || null);
       } else {
-        data = await login(email.trim(), password);
+        data = await login(trimmedEmail, password);
       }
 
       const token = data?.access_token;
       if (!token) {
-        Alert.alert('Error', 'No token returned from server');
-        return;
+        throw new Error('Authentication succeeded but no access token was returned.');
       }
       await authLogin(token);
     } catch (e) {
-      console.log('Login/Register failed:', e);
-      console.log('Response data:', e?.response?.data);
-      const msg = getNetworkErrorMessage(e) || 'Login failed';
-      Alert.alert('Error', String(msg));
+      const msg = getNetworkErrorMessage(e) || 'Authentication failed. Please check your credentials.';
+      setErrorMessage(String(msg));
+      if (Platform.OS !== 'web') {
+        Alert.alert('Authentication Notice', String(msg));
+      }
     } finally {
       setLoading(false);
+      isSubmittingRef.current = false;
     }
   };
 
+  const handleDemoFill = () => {
+    setEmail('demo@pramaan.ai');
+    setPassword('DemoPass123!');
+    setErrorMessage('');
+  };
+
+  const isFormValid =
+    email.trim().length > 0 &&
+    password.length > 0 &&
+    (mode === 'login' || password.length >= 6);
+
   return (
-    <View style={styles.container}>
+    <View style={styles.screen}>
       <KeyboardAvoidingView
         style={styles.kb}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <Text style={styles.heroTitle}>FoodScanner AI</Text>
-        <Text style={styles.heroSubtitle}>Scan smarter. Eat healthier.</Text>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Hero Branding & Floating Food Badges */}
+          <View style={styles.heroSection}>
+            <View style={styles.foodBadgesRow}>
+              <View style={[styles.floatingBubble, { backgroundColor: PREMIUM_COLORS.primaryLight, transform: [{ scale: 0.95 }] }]}>
+                <Ionicons name="nutrition-outline" size={22} color={PREMIUM_COLORS.primaryDark} />
+              </View>
+              <View style={[styles.floatingBubble, { backgroundColor: '#EEF6E8', transform: [{ translateY: -10 }] }]}>
+                <Ionicons name="leaf-outline" size={28} color={PREMIUM_COLORS.primaryDark} />
+              </View>
+              <View style={[styles.floatingBubble, { backgroundColor: PREMIUM_COLORS.aiBg, transform: [{ scale: 0.9 }] }]}>
+                <Ionicons name="shield-checkmark-outline" size={20} color={PREMIUM_COLORS.ai} />
+              </View>
+            </View>
 
-        <View style={styles.card}>
-          <View style={styles.toggleRow}>
-            <TouchableOpacity
-              style={[styles.toggleBtn, mode === 'login' && styles.toggleBtnActive]}
-              onPress={() => setMode('login')}
-              disabled={loading}
-            >
-              <Text style={[styles.toggleText, mode === 'login' && styles.toggleTextActive]}>Login</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.toggleBtn, mode === 'register' && styles.toggleBtnActive]}
-              onPress={() => setMode('register')}
-              disabled={loading}
-            >
-              <Text style={[styles.toggleText, mode === 'register' && styles.toggleTextActive]}>Register</Text>
-            </TouchableOpacity>
+            <View style={styles.brandBadge}>
+              <Text style={styles.brandBadgeText}>PRAMAAN</Text>
+            </View>
+
+            <Text style={styles.headline}>
+              Explore, Scan and{"\n"}
+              <Text style={styles.headlineHighlight}>Eat</Text> Healthy!
+            </Text>
+            <Text style={styles.subheadline}>
+              Scientific nutritional clarity, hazard detection, and personalized food intelligence.
+            </Text>
           </View>
 
-          {mode === 'register' ? (
-            <View style={styles.inputWrap}>
-              <TextInput
-                style={styles.input}
-                placeholder="Name"
-                placeholderTextColor="#777"
+          {/* Form Card */}
+          <View style={[styles.formCard, PREMIUM_SHADOWS.sm]}>
+            <NeoTab
+              tabs={[
+                { key: 'login', label: 'Log In' },
+                { key: 'register', label: 'Create Account' },
+              ]}
+              activeTab={mode}
+              onTabChange={handleModeChange}
+            />
+
+            {/* Inline Error Banner */}
+            {errorMessage ? (
+              <View style={styles.errorBanner}>
+                <Ionicons name="alert-circle" size={18} color={PREMIUM_COLORS.status.avoid} />
+                <Text style={styles.errorBannerText}>{errorMessage}</Text>
+                <TouchableOpacity
+                  onPress={() => setErrorMessage('')}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="close-circle-outline" size={16} color={PREMIUM_COLORS.secondary} />
+                </TouchableOpacity>
+              </View>
+            ) : null}
+
+            {mode === 'register' ? (
+              <NeoInput
+                label="Full Name"
+                placeholder="e.g. Kaluna Sharma"
                 value={name}
                 onChangeText={setName}
-                autoCapitalize="words"
-                editable={!loading}
               />
-            </View>
-          ) : null}
+            ) : null}
 
-          <View style={styles.inputWrap}>
-            <TextInput
-              style={styles.input}
-              placeholder="Email"
-              placeholderTextColor="#777"
+            <NeoInput
+              label="Email Address"
+              placeholder="e.g. user@example.com"
               value={email}
-              onChangeText={setEmail}
-              autoCapitalize="none"
+              onChangeText={handleEmailChange}
               keyboardType="email-address"
-              editable={!loading}
+              autoCapitalize="none"
+              autoCorrect={false}
             />
-          </View>
 
-          <View style={styles.inputWrap}>
-            <TextInput
-              style={styles.input}
-              placeholder="Password"
-              placeholderTextColor="#777"
+            <NeoInput
+              label="Password"
+              placeholder="••••••••"
               value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              editable={!loading}
+              onChangeText={handlePasswordChange}
+              secureTextEntry={!showPassword}
+              rightElement={
+                <TouchableOpacity
+                  onPress={() => setShowPassword((prev) => !prev)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  style={{ padding: 4 }}
+                >
+                  <Ionicons
+                    name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                    size={20}
+                    color={PREMIUM_COLORS.secondary}
+                  />
+                </TouchableOpacity>
+              }
             />
+
+            <NeoButton
+              title={mode === 'register' ? 'Get Started →' : 'Log In →'}
+              onPress={onSubmit}
+              loading={loading}
+              disabled={loading || !isFormValid}
+              variant="black"
+              size="lg"
+              style={{ marginTop: 6 }}
+            />
+
+            <TouchableOpacity
+              style={styles.demoBtn}
+              onPress={handleDemoFill}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.demoBtnText}>Use Fast Demo Credentials</Text>
+            </TouchableOpacity>
           </View>
-
-          <TouchableOpacity style={styles.submitBtn} onPress={onSubmit} disabled={loading}>
-            <Text style={styles.submitText}>
-              {loading ? 'Please wait...' : mode === 'login' ? 'Login' : 'Create account'}
-            </Text>
-          </TouchableOpacity>
-
-          <Text style={styles.note}>
-            Create an account or sign in to start scanning.
-          </Text>
-        </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  screen: {
     flex: 1,
-    justifyContent: 'center',
-    padding: 20,
-    backgroundColor: C.cream,
+    backgroundColor: PREMIUM_COLORS.bg,
   },
   kb: {
-    width: '100%',
-    alignSelf: 'center',
-    maxWidth: 420,
+    flex: 1,
   },
-  heroTitle: {
-    color: C.ink,
-    fontSize: 34,
-    fontWeight: '900',
+  scrollContent: {
+    flexGrow: 1,
+    padding: 24,
+    paddingTop: 54,
+    paddingBottom: 36,
+    justifyContent: 'center',
+  },
+  heroSection: {
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  foodBadgesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    marginBottom: 16,
+  },
+  floatingBubble: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...PREMIUM_SHADOWS.sm,
+  },
+  brandBadge: {
+    backgroundColor: PREMIUM_COLORS.primaryLight,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: PREMIUM_RADIUS.pill,
+    marginBottom: 10,
+  },
+  brandBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: PREMIUM_COLORS.primaryDark,
+    letterSpacing: 0.8,
+  },
+  headline: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: PREMIUM_COLORS.ink,
     textAlign: 'center',
-    letterSpacing: 0.3,
+    letterSpacing: -0.5,
+    lineHeight: 34,
   },
-  heroSubtitle: {
-    color: C.muted,
+  headlineHighlight: {
+    color: PREMIUM_COLORS.primaryDark,
+  },
+  subheadline: {
+    fontSize: 14,
+    fontWeight: '400',
+    color: PREMIUM_COLORS.secondary,
     textAlign: 'center',
     marginTop: 6,
-    marginBottom: 18,
-    fontSize: 14,
-    letterSpacing: 0.2,
+    lineHeight: 20,
+    maxWidth: 290,
   },
-  card: {
-    backgroundColor: C.white,
-    borderRadius: 16,
-    padding: 24,
+  formCard: {
+    backgroundColor: PREMIUM_COLORS.card,
+    borderRadius: PREMIUM_RADIUS.xl,
+    padding: 22,
     borderWidth: 1,
-    borderColor: C.border,
+    borderColor: PREMIUM_COLORS.border,
   },
-  toggleRow: {
+  errorBanner: {
     flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: PREMIUM_COLORS.status.avoidBg,
+    borderColor: PREMIUM_COLORS.status.avoidBorder,
     borderWidth: 1,
-    borderColor: C.border,
-    backgroundColor: 'transparent',
-    borderRadius: 999,
-    overflow: 'hidden',
-    marginBottom: 12,
-  },
-  toggleBtn: {
-    flex: 1,
+    borderRadius: PREMIUM_RADIUS.md,
+    paddingHorizontal: 12,
     paddingVertical: 10,
-    alignItems: 'center',
-    borderRadius: 999,
+    marginBottom: 14,
+    gap: 8,
   },
-  toggleBtnActive: {
-    backgroundColor: C.ink,
-  },
-  toggleText: {
-    fontWeight: '800',
-    color: C.ink,
-  },
-  toggleTextActive: {
-    color: C.white,
-  },
-  inputWrap: {
-    backgroundColor: C.white,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: C.border,
-    marginTop: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-  },
-  input: {
-    color: C.ink,
+  errorBannerText: {
+    flex: 1,
+    fontSize: 13,
     fontWeight: '600',
+    color: PREMIUM_COLORS.status.avoid,
+    lineHeight: 18,
   },
-  submitBtn: {
-    marginTop: 16,
-    backgroundColor: C.ink,
-    paddingVertical: 14,
-    borderRadius: 10,
-    alignItems: 'center',
+  demoBtn: {
+    alignSelf: 'center',
+    marginTop: 14,
+    paddingVertical: 6,
   },
-  submitText: {
-    color: C.white,
-    fontWeight: '900',
-    fontSize: 16,
-    letterSpacing: 0.6,
-  },
-  note: {
-    marginTop: 12,
-    color: C.muted,
-    fontSize: 12,
-    textAlign: 'center',
+  demoBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: PREMIUM_COLORS.primaryDark,
   },
 });

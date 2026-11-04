@@ -1,0 +1,59 @@
+# ==============================================================================
+# Prometheus Alerting Rules for FoodScanner AI (PRAMAAN)
+# ==============================================================================
+groups:
+  - name: pramaan_alerts
+    rules:
+      - alert: BackendServiceDown
+        expr: up{job="backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "FoodScanner backend service is unreachable"
+          description: "Target {{ $labels.instance }} has been down for more than 1 minute."
+
+      - alert: DatabaseDisconnected
+        expr: database_connected == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection lost or unverified"
+          description: "Backend reports database_connected == 0 for more than 1 minute. Live queries cannot be served."
+
+      - alert: HighHttp5xxErrorRate
+        expr: (sum(rate(http_requests_total{status_code=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))) * 100 > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP 5xx error rate detected"
+          description: "HTTP 5xx server errors exceed 5% of total requests over the last 5 minutes."
+
+      - alert: HighHttpLatencyP95
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, endpoint)) > 2.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated 95th percentile HTTP latency"
+          description: "Endpoint {{ $labels.endpoint }} has p95 latency > 2.0s over the last 5 minutes."
+
+      - alert: StaleOcrJobsDetected
+        expr: rate(ocr_stale_jobs_reaped_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "OCR background worker timeout"
+          description: "Stale OCR jobs are actively being reaped after exceeding processing timeout."
+
+      - alert: ElevatedRateLimitRejections
+        expr: sum(rate(rate_limit_exceeded_total[5m])) by (endpoint) > 0.5
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "High rate limit rejection rate"
+          description: "Endpoint {{ $labels.endpoint }} is rejecting > 0.5 req/sec (HTTP 429), indicating client burst or potential abuse."
