@@ -284,17 +284,10 @@ def get_healthier_alternatives(
     if not name or not isinstance(nutrition_data, dict):
         return []
 
-    if not INDIAN_DATASET_PATH.exists():
-        logger.warning(f"Indian foods dataset not found at {INDIAN_DATASET_PATH}")
-        return []
+    from services.product_search import get_indian_dataset_df
 
-    try:
-        df = pd.read_csv(INDIAN_DATASET_PATH)
-    except Exception as exc:
-        logger.error(f"Failed to read dataset for alternatives: {exc}")
-        return []
-
-    if "product_name" not in df.columns:
+    df = get_indian_dataset_df()
+    if df is None or "product_name" not in df.columns:
         return []
 
     base_cat = infer_food_category(name, nutrition_data)
