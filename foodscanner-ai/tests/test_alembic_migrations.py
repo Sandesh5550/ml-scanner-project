@@ -70,7 +70,7 @@ def test_fresh_sqlite_database_upgraded_to_head(tmp_path):
     # Verify alembic_version revision ID
     with engine.connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "002_add_ocr_jobs_and_allergens"
+        assert rev == "003_add_saturated_and_trans_fat"
 
 
 def test_upgrade_from_001_preserves_user_data(tmp_path):
@@ -169,7 +169,7 @@ def test_preexisting_dev_schema_idempotency(tmp_path):
     assert "ocr_jobs" in set(inspector_after.get_table_names())
     with engine.connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "002_add_ocr_jobs_and_allergens"
+        assert rev == "003_add_saturated_and_trans_fat"
 
 
 def test_ocr_indexes_and_foreign_keys(tmp_path):
@@ -250,7 +250,7 @@ def test_multiworker_startup_skips_inprocess_upgrade(tmp_path):
     command.upgrade(cfg, "head")
     with engine.connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "002_add_ocr_jobs_and_allergens"
+        assert rev == "003_add_saturated_and_trans_fat"
 
 
 def test_unversioned_fallback_repairs_missing_indexes(tmp_path):
@@ -348,7 +348,7 @@ def test_unversioned_database_unsafe_upgrade_blocked_by_preflight(tmp_path):
 
     with engine.connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "002_add_ocr_jobs_and_allergens"
+        assert rev == "003_add_saturated_and_trans_fat"
 
 
 def test_migration_002_rejects_incompatible_schema(tmp_path):
@@ -483,7 +483,7 @@ def test_postgresql_ci_guard_skips_in_local_dev_when_unconfigured(monkeypatch):
 
 
 def test_render_configuration_has_pre_deploy_migration():
-    """8. Verify Render free-tier service avoids preDeployCommand and runs migrations via Dockerfile CMD."""
+    """8. Verify Render free-tier service avoids preDeployCommand and Dockerfile CMD avoids duplicate migrations."""
     import yaml
 
     repo_root = BASE_DIR.parent
@@ -502,12 +502,15 @@ def test_render_configuration_has_pre_deploy_migration():
         "preDeployCommand must not be declared on Render free-tier service"
     )
 
-    # Migrations run sequentially before Uvicorn in the Dockerfile entrypoint CMD
+    # Dockerfile entrypoint CMD starts Uvicorn directly without running duplicate migrations
     dockerfile_path = BASE_DIR / "Dockerfile"
     assert dockerfile_path.exists(), f"Dockerfile not found at {dockerfile_path}"
     dockerfile_content = dockerfile_path.read_text(encoding="utf-8")
-    assert "alembic upgrade head && exec uvicorn" in dockerfile_content, (
-        "Dockerfile CMD must execute 'alembic upgrade head' before starting Uvicorn"
+    assert "exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT}" in dockerfile_content, (
+        "Dockerfile CMD must execute Uvicorn directly"
+    )
+    assert "alembic upgrade head" not in dockerfile_content, (
+        "Dockerfile CMD must not run 'alembic upgrade head' to prevent duplicate execution"
     )
 
     # Verify DATABASE_URL is wired from foodscanner-db

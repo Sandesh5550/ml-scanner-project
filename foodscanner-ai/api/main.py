@@ -186,6 +186,7 @@ class AnalyzeRequest(BaseModel):
     calories: float | None = None
     fat: float | None = None
     saturated_fat: float | None = None
+    trans_fat: float | None = None
     sugar: float | None = None
     salt: float | None = None
     protein: float | None = None
@@ -222,6 +223,8 @@ class FoodLogRequest(BaseModel):
     barcode: str | None = None
     calories: float = 0
     fat: float | None = None
+    saturated_fat: float | None = None
+    trans_fat: float | None = None
     sugar: float | None = None
     salt: float | None = None
     protein: float | None = None
@@ -234,6 +237,8 @@ class FoodLogUpdateRequest(BaseModel):
     product_name: str | None = None
     calories: float | None = None
     fat: float | None = None
+    saturated_fat: float | None = None
+    trans_fat: float | None = None
     sugar: float | None = None
     salt: float | None = None
     protein: float | None = None
@@ -345,6 +350,8 @@ def _csv_fuzzy_lookup(name: str, threshold: float = 75.0) -> dict | None:
         "product_name": best_name,
         "calories": _f(best_row.get("calories")),
         "fat": _f(best_row.get("fat")),
+        "saturated_fat": _f(best_row.get("saturated_fat")),
+        "trans_fat": _f(best_row.get("trans_fat")),
         "sugar": _f(best_row.get("sugar")),
         "salt": _f(best_row.get("salt")),
         "protein": _f(best_row.get("protein")),
@@ -500,6 +507,8 @@ def execute_ocr_background_task(
             eff_nutrition = {
                 "calories": result.get("calories"),
                 "fat": result.get("fat"),
+                "saturated_fat": result.get("saturated_fat"),
+                "trans_fat": result.get("trans_fat"),
                 "sugar": result.get("sugar"),
                 "salt": result.get("salt"),
                 "protein": result.get("protein"),
@@ -673,6 +682,8 @@ def ocr_nutrition_label(
         eff_nutrition = {
             "calories": result.get("calories"),
             "fat": result.get("fat"),
+            "saturated_fat": result.get("saturated_fat"),
+            "trans_fat": result.get("trans_fat"),
             "sugar": result.get("sugar"),
             "salt": result.get("salt"),
             "protein": result.get("protein"),
@@ -748,6 +759,8 @@ def log_food(
 
     calories = float(req.calories or 0.0) * scale_factor
     fat = float(req.fat) * scale_factor if req.fat is not None else None
+    saturated_fat = float(req.saturated_fat) * scale_factor if req.saturated_fat is not None else None
+    trans_fat = float(req.trans_fat) * scale_factor if req.trans_fat is not None else None
     sugar = float(req.sugar) * scale_factor if req.sugar is not None else None
     salt = float(req.salt) * scale_factor if req.salt is not None else None
     protein = float(req.protein) * scale_factor if req.protein is not None else None
@@ -760,6 +773,8 @@ def log_food(
         product_name=product_name,
         calories=calories,
         fat=fat,
+        saturated_fat=saturated_fat,
+        trans_fat=trans_fat,
         sugar=sugar,
         salt=salt,
         protein=protein,
@@ -801,6 +816,8 @@ def update_food_log_endpoint(
             "product_name": updated.product_name,
             "calories": updated.calories,
             "fat": updated.fat,
+            "saturated_fat": updated.saturated_fat,
+            "trans_fat": updated.trans_fat,
             "sugar": updated.sugar,
             "salt": updated.salt,
             "protein": updated.protein,
@@ -828,6 +845,7 @@ def analyze(
         "calories": req.calories,
         "fat": req.fat,
         "saturated_fat": req.saturated_fat,
+        "trans_fat": req.trans_fat,
         "sugar": req.sugar,
         "salt": req.salt,
         "protein": req.protein,
@@ -868,6 +886,7 @@ def analyze(
         "calories": product.get("calories"),
         "fat": product.get("fat"),
         "saturated_fat": product.get("saturated_fat"),
+        "trans_fat": product.get("trans_fat"),
         "sugar": product.get("sugar"),
         "salt": product.get("salt"),
         "protein": product.get("protein"),
@@ -899,6 +918,7 @@ def analyze(
             "calories": _scale(nutrition_per_100g.get("calories")),
             "fat": _scale(nutrition_per_100g.get("fat")),
             "saturated_fat": _scale(nutrition_per_100g.get("saturated_fat")),
+            "trans_fat": _scale(nutrition_per_100g.get("trans_fat")),
             "sugar": _scale(nutrition_per_100g.get("sugar")),
             "salt": _scale(nutrition_per_100g.get("salt")),
             "protein": _scale(nutrition_per_100g.get("protein")),
@@ -1122,6 +1142,8 @@ def get_product(
             "nutrition": {
                 "calories": product.get("calories"),
                 "fat": product.get("fat"),
+                "saturated_fat": product.get("saturated_fat"),
+                "trans_fat": product.get("trans_fat"),
                 "sugar": product.get("sugar"),
                 "salt": product.get("salt"),
                 "protein": product.get("protein"),
@@ -1158,6 +1180,8 @@ def today(
             FoodLog.calories,
             FoodLog.consumed_at,
             FoodLog.fat,
+            FoodLog.saturated_fat,
+            FoodLog.trans_fat,
             FoodLog.sugar,
             FoodLog.salt,
             FoodLog.protein,
@@ -1178,9 +1202,11 @@ def today(
                 "calories": float(r[2]) if r[2] is not None else None,
                 "consumed_at": r[3],
                 "fat": float(r[4]) if r[4] is not None else None,
-                "sugar": float(r[5]) if r[5] is not None else None,
-                "salt": float(r[6]) if r[6] is not None else None,
-                "protein": float(r[7]) if r[7] is not None else None,
+                "saturated_fat": float(r[5]) if r[5] is not None else None,
+                "trans_fat": float(r[6]) if r[6] is not None else None,
+                "sugar": float(r[7]) if r[7] is not None else None,
+                "salt": float(r[8]) if r[8] is not None else None,
+                "protein": float(r[9]) if r[9] is not None else None,
             }
             for r in today_foods
         ],
@@ -1219,6 +1245,8 @@ def scan(
     nutrition = {
         "calories": result.get("calories"),
         "fat": result.get("fat"),
+        "saturated_fat": result.get("saturated_fat"),
+        "trans_fat": result.get("trans_fat"),
         "sugar": result.get("sugar"),
         "salt": result.get("salt"),
         "protein": result.get("protein"),
@@ -1298,6 +1326,8 @@ def verify_claims_endpoint(
                 db_nutrition = {
                     "calories": product.get("calories"),
                     "fat": product.get("fat"),
+                    "saturated_fat": product.get("saturated_fat"),
+                    "trans_fat": product.get("trans_fat"),
                     "sugar": product.get("sugar"),
                     "salt": product.get("salt"),
                     "protein": product.get("protein"),
@@ -1335,6 +1365,8 @@ def alternatives_endpoint(
             db_nutr = {
                 "calories": prod.get("calories"),
                 "fat": prod.get("fat"),
+                "saturated_fat": prod.get("saturated_fat"),
+                "trans_fat": prod.get("trans_fat"),
                 "sugar": prod.get("sugar"),
                 "salt": prod.get("salt"),
                 "protein": prod.get("protein"),
@@ -1354,6 +1386,8 @@ def alternatives_endpoint(
             nutrition = {
                 "calories": found.get("calories"),
                 "fat": found.get("fat"),
+                "saturated_fat": found.get("saturated_fat"),
+                "trans_fat": found.get("trans_fat"),
                 "sugar": found.get("sugar"),
                 "salt": found.get("salt"),
                 "protein": found.get("protein"),
@@ -1391,6 +1425,8 @@ def get_alternatives_by_barcode(
     nutrition = {
         "calories": prod.get("calories"),
         "fat": prod.get("fat"),
+        "saturated_fat": prod.get("saturated_fat"),
+        "trans_fat": prod.get("trans_fat"),
         "sugar": prod.get("sugar"),
         "salt": prod.get("salt"),
         "protein": prod.get("protein"),
@@ -1462,24 +1498,19 @@ def compare(
 
     a_nutriscore = a.get("nutriscore")
     if not a_nutriscore:
-        try:
-            from ml_model.predict_nutriscore import calculate_heuristic_nutriscore
-            a_nutriscore = calculate_heuristic_nutriscore(a)
-        except Exception:
-            a_nutriscore = None
+        from ml_model.predict_nutriscore import predict_nutriscore_with_fallback
+        a_nutriscore = predict_nutriscore_with_fallback(a)
 
     b_nutriscore = b.get("nutriscore")
     if not b_nutriscore:
-        try:
-            from ml_model.predict_nutriscore import calculate_heuristic_nutriscore
-            b_nutriscore = calculate_heuristic_nutriscore(b)
-        except Exception:
-            b_nutriscore = None
+        from ml_model.predict_nutriscore import predict_nutriscore_with_fallback
+        b_nutriscore = predict_nutriscore_with_fallback(b)
 
     a_nutrition = {
         "calories": _to_float(a.get("calories")),
         "fat": _to_float(a.get("fat")),
         "saturated_fat": _to_float(a.get("saturated_fat")),
+        "trans_fat": _to_float(a.get("trans_fat")),
         "carbohydrates": _to_float(a.get("carbs")),
         "sugar": _to_float(a.get("sugar")),
         "fiber": _to_float(a.get("fiber")),
@@ -1490,6 +1521,7 @@ def compare(
         "calories": _to_float(b.get("calories")),
         "fat": _to_float(b.get("fat")),
         "saturated_fat": _to_float(b.get("saturated_fat")),
+        "trans_fat": _to_float(b.get("trans_fat")),
         "carbohydrates": _to_float(b.get("carbs")),
         "sugar": _to_float(b.get("sugar")),
         "fiber": _to_float(b.get("fiber")),

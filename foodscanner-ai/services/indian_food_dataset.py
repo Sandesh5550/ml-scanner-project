@@ -47,6 +47,8 @@ def search_indian_dataset(product_name: str) -> Optional[dict]:
         "product_name": str(row.get("product_name")),
         "calories": _to_float(row.get("calories")),
         "fat": _to_float(row.get("fat")),
+        "saturated_fat": _to_float(row.get("saturated_fat")),
+        "trans_fat": _to_float(row.get("trans_fat")),
         "sugar": _to_float(row.get("sugar")),
         "salt": _to_float(row.get("salt")),
         "protein": _to_float(row.get("protein")),

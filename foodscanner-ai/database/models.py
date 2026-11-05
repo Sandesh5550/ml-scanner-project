@@ -61,6 +61,8 @@ class Nutrition(Base):
 
     calories: Mapped[float | None] = mapped_column(Float, nullable=True)
     fat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    saturated_fat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trans_fat: Mapped[float | None] = mapped_column(Float, nullable=True)
     sugar: Mapped[float | None] = mapped_column(Float, nullable=True)
     salt: Mapped[float | None] = mapped_column(Float, nullable=True)
     protein: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -97,6 +99,8 @@ class FoodLog(Base):
     product_name: Mapped[str] = mapped_column(String, nullable=False)
     calories: Mapped[float | None] = mapped_column(Float, nullable=True)
     fat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    saturated_fat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trans_fat: Mapped[float | None] = mapped_column(Float, nullable=True)
     sugar: Mapped[float | None] = mapped_column(Float, nullable=True)
     salt: Mapped[float | None] = mapped_column(Float, nullable=True)
     protein: Mapped[float | None] = mapped_column(Float, nullable=True)

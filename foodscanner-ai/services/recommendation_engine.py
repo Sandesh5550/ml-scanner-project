@@ -240,11 +240,8 @@ def _evaluate_candidate(
 
     cand_ns = cand_row.get("nutriscore")
     if not cand_ns:
-        try:
-            from ml_model.predict_nutriscore import calculate_heuristic_nutriscore
-            cand_ns = calculate_heuristic_nutriscore(cand_nutr_for_score)
-        except Exception:
-            cand_ns = None
+        from ml_model.predict_nutriscore import predict_nutriscore_with_fallback
+        cand_ns = predict_nutriscore_with_fallback(cand_nutr_for_score)
 
     cand_barcode = cand_row.get("barcode") or None
 

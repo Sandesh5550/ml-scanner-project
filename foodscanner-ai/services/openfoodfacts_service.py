@@ -78,7 +78,14 @@ def _normalize_product_dict(barcode: str, product: dict[str, Any]) -> Optional[d
         "saturated_fat": _to_float(
             nutriments.get("saturated-fat_100g")
             or nutriments.get("saturated_fat_100g")
+            or nutriments.get("saturated-fat")
             or nutriments.get("saturated_fat")
+        ),
+        "trans_fat": _to_float(
+            nutriments.get("trans-fat_100g")
+            or nutriments.get("trans_fat_100g")
+            or nutriments.get("trans-fat")
+            or nutriments.get("trans_fat")
         ),
         "sugar": _to_float(nutriments.get("sugars_100g") or nutriments.get("sugars") or nutriments.get("sugar")),
         "salt": salt,

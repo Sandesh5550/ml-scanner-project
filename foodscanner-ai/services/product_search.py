@@ -177,7 +177,7 @@ def _search_local_db(db: Session, query: str, limit: int = 30) -> List[Dict[str,
 
     stmt = text("""
         SELECT p.id, p.barcode, p.product_name, p.brand, p.nutriscore, p.ingredients,
-               n.calories, n.fat, n.sugar, n.salt, n.protein, n.fiber, n.carbs
+               n.calories, n.fat, n.saturated_fat, n.trans_fat, n.sugar, n.salt, n.protein, n.fiber, n.carbs
         FROM products p
         LEFT JOIN nutrition n ON n.product_id = p.id
         WHERE p.product_name LIKE :term ESCAPE '/'
@@ -239,6 +239,8 @@ def _search_local_db(db: Session, query: str, limit: int = 30) -> List[Dict[str,
             "nutrition": {
                 "calories": _to_optional_float(r.calories),
                 "fat": _to_optional_float(r.fat),
+                "saturated_fat": _to_optional_float(getattr(r, "saturated_fat", None)),
+                "trans_fat": _to_optional_float(getattr(r, "trans_fat", None)),
                 "sugar": _to_optional_float(r.sugar),
                 "salt": _to_optional_float(r.salt),
                 "protein": _to_optional_float(r.protein),
