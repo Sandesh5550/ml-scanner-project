@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
@@ -275,8 +276,17 @@ def build_user_prompt(
     return "\n".join(lines)
 
 
-def sanitize_assistant_response(raw_answer: Optional[str]) -> str:
-    """Validate and sanitize generated response, ensuring no prompt leaks or malformed outputs."""
+# Compiled secret sanitization patterns
+_RE_GOOGLE_API_KEY = re.compile(r"AIza[0-9A-Za-z\-_]{20,}")
+_RE_BEARER_TOKEN = re.compile(r"Bearer\s+[A-Za-z0-9\-_]+(?:\.[A-Za-z0-9\-_]+)*", re.IGNORECASE)
+_RE_SECRET_LITERALS = re.compile(r"\b(AI_API_KEY|SECRET_KEY)\b")
+
+
+def sanitize_assistant_response(
+    raw_answer: Optional[str],
+    configured_api_key: Optional[str] = None,
+) -> str:
+    """Validate and sanitize generated response, ensuring no prompt leaks or credential disclosures."""
     if not raw_answer or not str(raw_answer).strip():
         return (
             "The AI assistant could not generate a response at this time. PRAMAAN's deterministic "
@@ -292,8 +302,29 @@ def sanitize_assistant_response(raw_answer: Optional[str]) -> str:
             "in verified product facts and statutory FSSAI/ICMR-NIN/WHO guidelines."
         )
 
-    # Redact secret patterns if accidentally echoed
-    text = re.sub(r"(AI_API_KEY|SECRET_KEY|Bearer\s+[A-Za-z0-9\._\-]+)", "[REDACTED]", text)
+    # 1. Redact dynamically configured AI_API_KEY if present
+    target_api_key = (
+        configured_api_key
+        if configured_api_key is not None
+        else os.environ.get("AI_API_KEY") or ""
+    ).strip()
+    if target_api_key and len(target_api_key) >= 8:
+        text = text.replace(target_api_key, "[REDACTED]")
+
+    # 2. Redact SECRET_KEY if present in environment
+    target_secret_key = (os.environ.get("SECRET_KEY") or "").strip()
+    if target_secret_key and len(target_secret_key) >= 8:
+        text = text.replace(target_secret_key, "[REDACTED]")
+
+    # 3. Redact Google API key patterns beginning with AIza (39 chars total)
+    text = _RE_GOOGLE_API_KEY.sub("[REDACTED]", text)
+
+    # 4. Redact Bearer authentication tokens
+    text = _RE_BEARER_TOKEN.sub("[REDACTED]", text)
+
+    # 5. Redact literal secret-name references
+    text = _RE_SECRET_LITERALS.sub("[REDACTED]", text)
+
     return text
 
 

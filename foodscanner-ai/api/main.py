@@ -49,7 +49,7 @@ from services.ocr_service import (
 from services.personalization import get_personalized_analysis, calculate_personalized_calorie_estimate
 from services.ai_nutrition_assistant import ask_nutrition_assistant
 from services.config import load_environment, validate_runtime_config
-from services.rate_limiter import enforce_rate_limit
+from services.rate_limiter import enforce_rate_limit, get_rate_limiter
 from services.metrics import (
     get_metrics_exposition,
     normalize_metric_endpoint,
@@ -115,8 +115,15 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Startup stale OCR job recovery warning: %s", exc)
 
+    # Initialize rate limiter background cleanup
+    rate_limiter = get_rate_limiter()
+    await rate_limiter.start_background_cleanup()
+
     print("FoodScanner API running. For Expo Go, start uvicorn with --host 0.0.0.0 and open http://<your-lan-ip>:8000/health")
-    yield
+    try:
+        yield
+    finally:
+        await rate_limiter.stop_background_cleanup()
 
 
 app = FastAPI(
@@ -705,10 +712,12 @@ def ocr_nutrition_label(
 @app.get("/ocr/jobs/{job_id}", tags=["tracking"])
 def get_ocr_job_status(
     job_id: str,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """Retrieve the status and result of an OCR background processing job."""
+    enforce_rate_limit("ocr_job", request, user_id=current_user.id)
     cleaned_job_id = (job_id or "").strip()
     if not cleaned_job_id or len(cleaned_job_id) > 64 or not re.match(r"^[a-zA-Z0-9_\-]+$", cleaned_job_id):
         raise HTTPException(status_code=400, detail="Invalid job ID format")
@@ -832,9 +841,11 @@ def update_food_log_endpoint(
 @app.post("/analyze", tags=["tracking"])
 def analyze(
     req: AnalyzeRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
+    enforce_rate_limit("analyze", request, user_id=current_user.id)
     name = (req.product_name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="product_name is required")
@@ -1071,20 +1082,24 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)) ->
 
 @app.get("/search", tags=["products"])
 def search(
+    request: Request,
     query: str = Query(..., min_length=1, max_length=100),
     limit: int = Query(25, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[dict]:
+    enforce_rate_limit("search", request, user_id=current_user.id)
     return search_products(db, query, limit=limit)
 
 
 @app.get("/product/{barcode}", tags=["products"])
 def get_product(
     barcode: str,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
+    enforce_rate_limit("product", request, user_id=current_user.id)
     barcode = (barcode or "").strip()
     if not barcode.isdigit() or not (8 <= len(barcode) <= 14):
         raise HTTPException(status_code=400, detail="invalid barcode")
@@ -1308,9 +1323,11 @@ def scan(
 @app.post("/verify-claims", tags=["claims"])
 def verify_claims_endpoint(
     req: VerifyClaimsRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
+    enforce_rate_limit("claims", request, user_id=current_user.id)
     if not isinstance(req.claims, list):
         raise HTTPException(status_code=400, detail="claims must be a list of strings")
 
@@ -1449,9 +1466,11 @@ def get_alternatives_by_barcode(
 @app.post("/compare", tags=["products"])
 def compare(
     req: CompareRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
+    enforce_rate_limit("compare", request, user_id=current_user.id)
     q_a = (req.product_a or "").strip()
     q_b = (req.product_b or "").strip()
     if not q_a or not q_b:

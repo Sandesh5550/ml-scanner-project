@@ -18,6 +18,10 @@ services:
         value: production
       - key: ALLOWED_ORIGINS
         value: https://foodscanner-mobile.onrender.com
+      - key: PROXY_PROVIDER
+        value: render
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
   - type: web
     name: foodscanner-mobile
     runtime: static
