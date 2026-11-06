@@ -52,6 +52,8 @@ def get_product_by_barcode(db: Session, barcode: str) -> Optional[dict[str, Any]
         "created_at": product.created_at,
         "calories": nutrition.calories if nutrition else None,
         "fat": nutrition.fat if nutrition else None,
+        "saturated_fat": nutrition.saturated_fat if nutrition else None,
+        "trans_fat": nutrition.trans_fat if nutrition else None,
         "sugar": nutrition.sugar if nutrition else None,
         "salt": nutrition.salt if nutrition else None,
         "protein": nutrition.protein if nutrition else None,
@@ -98,7 +100,7 @@ def create_nutrition(db: Session, nutrition_data: dict[str, Any]) -> Nutrition:
 
     existing = db.execute(select(Nutrition).where(Nutrition.product_id == product_id)).scalar_one_or_none()
     if existing is not None:
-        for key in ["calories", "fat", "sugar", "salt", "protein", "fiber", "carbs"]:
+        for key in ["calories", "fat", "saturated_fat", "trans_fat", "sugar", "salt", "protein", "fiber", "carbs"]:
             if key in nutrition_data:
                 setattr(existing, key, nutrition_data.get(key))
         db.add(existing)
@@ -109,6 +111,8 @@ def create_nutrition(db: Session, nutrition_data: dict[str, Any]) -> Nutrition:
         product_id=product_id,
         calories=nutrition_data.get("calories"),
         fat=nutrition_data.get("fat"),
+        saturated_fat=nutrition_data.get("saturated_fat"),
+        trans_fat=nutrition_data.get("trans_fat"),
         sugar=nutrition_data.get("sugar"),
         salt=nutrition_data.get("salt"),
         protein=nutrition_data.get("protein"),
@@ -138,6 +142,8 @@ def log_food_consumption(
     product_name: str,
     calories: Optional[float],
     fat: Optional[float] = None,
+    saturated_fat: Optional[float] = None,
+    trans_fat: Optional[float] = None,
     sugar: Optional[float] = None,
     salt: Optional[float] = None,
     protein: Optional[float] = None,
@@ -153,6 +159,8 @@ def log_food_consumption(
         product_name=str(product_name or ""),
         calories=calories,
         fat=fat,
+        saturated_fat=saturated_fat,
+        trans_fat=trans_fat,
         sugar=sugar,
         salt=salt,
         protein=protein,
@@ -195,13 +203,15 @@ def get_remaining_calories(db: Session, daily_limit: float, user_id: int) -> flo
     return float(daily_limit) - float(consumed)
 
 
-def get_product_name_candidates(db: Session, limit: int = 200) -> list[str]:
-    rows = db.execute(
+def get_product_name_candidates(db: Session, limit: Optional[int] = None) -> list[str]:
+    stmt = (
         select(Product.product_name)
         .where(Product.product_name.is_not(None))
         .order_by(Product.created_at.desc())
-        .limit(int(limit))
-    ).all()
+    )
+    if limit is not None and limit > 0:
+        stmt = stmt.limit(int(limit))
+    rows = db.execute(stmt).all()
     return [str(r[0]) for r in rows if r and r[0]]
 
 
@@ -223,12 +233,84 @@ def _similarity(query: str, name: str) -> float:
     )
 
 
+def _format_product_fuzzy_result(
+    product: Product,
+    nutrition: Nutrition | None,
+    query: str,
+    matched_name: str,
+    similarity: float,
+) -> dict[str, Any]:
+    return {
+        "id": product.id,
+        "barcode": product.barcode,
+        "product_name": product.product_name,
+        "brand": product.brand,
+        "nutriscore": product.nutriscore,
+        "ingredients": product.ingredients,
+        "additives": product.additives,
+        "created_at": product.created_at,
+        "calories": nutrition.calories if nutrition else None,
+        "fat": nutrition.fat if nutrition else None,
+        "saturated_fat": nutrition.saturated_fat if nutrition else None,
+        "trans_fat": nutrition.trans_fat if nutrition else None,
+        "sugar": nutrition.sugar if nutrition else None,
+        "salt": nutrition.salt if nutrition else None,
+        "protein": nutrition.protein if nutrition else None,
+        "fiber": nutrition.fiber if nutrition else None,
+        "carbs": nutrition.carbs if nutrition else None,
+        "_match": {
+            "query": query,
+            "matched_name": matched_name,
+            "similarity": similarity,
+        },
+    }
+
+
 def get_product_by_name_fuzzy(db: Session, query: str, min_similarity: float = 80.0) -> Optional[dict[str, Any]]:
     q = _normalize_name(query)
     if not q:
         return None
 
-    candidates = get_product_name_candidates(db, limit=400)
+    # 1. Exact case-insensitive SQL match
+    stmt_exact = (
+        select(Product, Nutrition)
+        .outerjoin(Nutrition, Nutrition.product_id == Product.id)
+        .where(func.lower(func.trim(Product.product_name)) == q.lower())
+        .order_by(Product.id.desc())
+    )
+    exact_row = db.execute(stmt_exact).first()
+    if exact_row is not None:
+        p: Product = exact_row[0]
+        n: Nutrition | None = exact_row[1]
+        return _format_product_fuzzy_result(p, n, q, p.product_name, 100.0)
+
+    # 2. SQL LIKE-based filtering with wildcard escaping
+    escaped_q = q.replace("/", "//").replace("%", "/%").replace("_", "/_")
+    term = f"%{escaped_q}%"
+    stmt_like = (
+        select(Product, Nutrition)
+        .outerjoin(Nutrition, Nutrition.product_id == Product.id)
+        .where(Product.product_name.like(term, escape="/"))
+        .order_by(Product.id.desc())
+    )
+    like_rows = db.execute(stmt_like).all()
+    if like_rows:
+        best_like_row = None
+        best_like_score = 0.0
+        for r in like_rows:
+            prod: Product = r[0]
+            score = _similarity(q, prod.product_name)
+            if score > best_like_score:
+                best_like_score = score
+                best_like_row = r
+
+        if best_like_row is not None and best_like_score >= float(min_similarity):
+            p: Product = best_like_row[0]
+            n: Nutrition | None = best_like_row[1]
+            return _format_product_fuzzy_result(p, n, q, p.product_name, best_like_score)
+
+    # 3. Database-wide candidate fuzzy matching fallback (without arbitrary 400-truncation)
+    candidates = get_product_name_candidates(db, limit=None)
     best_name: str | None = None
     best_score = 0.0
     for name in candidates:
@@ -240,40 +322,19 @@ def get_product_by_name_fuzzy(db: Session, query: str, min_similarity: float = 8
     if best_name is None or best_score < float(min_similarity):
         return None
 
-    stmt = (
+    stmt_best = (
         select(Product, Nutrition)
         .outerjoin(Nutrition, Nutrition.product_id == Product.id)
         .where(func.lower(Product.product_name) == best_name.strip().lower())
+        .order_by(Product.id.desc())
     )
-    row = db.execute(stmt).first()
+    row = db.execute(stmt_best).first()
     if row is None:
         return None
 
-    product: Product = row[0]
-    nutrition: Nutrition | None = row[1]
-
-    result: dict[str, Any] = {
-        "id": product.id,
-        "barcode": product.barcode,
-        "product_name": product.product_name,
-        "nutriscore": product.nutriscore,
-        "ingredients": product.ingredients,
-        "additives": product.additives,
-        "created_at": product.created_at,
-        "calories": nutrition.calories if nutrition else None,
-        "fat": nutrition.fat if nutrition else None,
-        "sugar": nutrition.sugar if nutrition else None,
-        "salt": nutrition.salt if nutrition else None,
-        "protein": nutrition.protein if nutrition else None,
-        "fiber": nutrition.fiber if nutrition else None,
-        "carbs": nutrition.carbs if nutrition else None,
-        "_match": {
-            "query": q,
-            "matched_name": best_name,
-            "similarity": best_score,
-        },
-    }
-    return result
+    p: Product = row[0]
+    n: Nutrition | None = row[1]
+    return _format_product_fuzzy_result(p, n, q, best_name, best_score)
 
 
 def ensure_default_user(db: Session) -> Optional[User]:
@@ -478,6 +539,8 @@ def get_today_food_logs(db: Session, user_id: int) -> list[dict]:
                 FoodLog.calories,
                 FoodLog.consumed_at,
                 FoodLog.fat.label("food_log_fat"),
+                FoodLog.saturated_fat.label("food_log_saturated_fat"),
+                FoodLog.trans_fat.label("food_log_trans_fat"),
                 FoodLog.sugar.label("food_log_sugar"),
                 FoodLog.salt.label("food_log_salt"),
                 FoodLog.protein.label("food_log_protein"),
@@ -486,6 +549,8 @@ def get_today_food_logs(db: Session, user_id: int) -> list[dict]:
                 Product.ingredients,
                 Product.additives,
                 Nutrition.fat.label("nutrition_fat"),
+                Nutrition.saturated_fat.label("nutrition_saturated_fat"),
+                Nutrition.trans_fat.label("nutrition_trans_fat"),
                 Nutrition.sugar.label("nutrition_sugar"),
                 Nutrition.salt.label("nutrition_salt"),
                 Nutrition.protein.label("nutrition_protein"),
@@ -509,6 +574,8 @@ def get_today_food_logs(db: Session, user_id: int) -> list[dict]:
             "product_name": row.product_name,
             "calories": row.calories,
             "fat": row.food_log_fat if row.food_log_fat is not None else row.nutrition_fat,
+            "saturated_fat": row.food_log_saturated_fat if row.food_log_saturated_fat is not None else row.nutrition_saturated_fat,
+            "trans_fat": row.food_log_trans_fat if row.food_log_trans_fat is not None else row.nutrition_trans_fat,
             "sugar": row.food_log_sugar if row.food_log_sugar is not None else row.nutrition_sugar,
             "salt": row.food_log_salt if row.food_log_salt is not None else row.nutrition_salt,
             "protein": row.food_log_protein if row.food_log_protein is not None else row.nutrition_protein,
@@ -536,6 +603,8 @@ def get_week_food_logs(db: Session, user_id: int) -> dict[str, list[dict]]:
                 FoodLog.calories,
                 FoodLog.consumed_at,
                 FoodLog.fat.label("food_log_fat"),
+                FoodLog.saturated_fat.label("food_log_saturated_fat"),
+                FoodLog.trans_fat.label("food_log_trans_fat"),
                 FoodLog.sugar.label("food_log_sugar"),
                 FoodLog.salt.label("food_log_salt"),
                 FoodLog.protein.label("food_log_protein"),
@@ -544,6 +613,8 @@ def get_week_food_logs(db: Session, user_id: int) -> dict[str, list[dict]]:
                 Product.ingredients,
                 Product.additives,
                 Nutrition.fat.label("nutrition_fat"),
+                Nutrition.saturated_fat.label("nutrition_saturated_fat"),
+                Nutrition.trans_fat.label("nutrition_trans_fat"),
                 Nutrition.sugar.label("nutrition_sugar"),
                 Nutrition.salt.label("nutrition_salt"),
                 Nutrition.protein.label("nutrition_protein"),
@@ -570,6 +641,8 @@ def get_week_food_logs(db: Session, user_id: int) -> dict[str, list[dict]]:
                 "product_name": row.product_name,
                 "calories": row.calories,
                 "fat": row.food_log_fat if row.food_log_fat is not None else row.nutrition_fat,
+                "saturated_fat": row.food_log_saturated_fat if row.food_log_saturated_fat is not None else row.nutrition_saturated_fat,
+                "trans_fat": row.food_log_trans_fat if row.food_log_trans_fat is not None else row.nutrition_trans_fat,
                 "sugar": row.food_log_sugar if row.food_log_sugar is not None else row.nutrition_sugar,
                 "salt": row.food_log_salt if row.food_log_salt is not None else row.nutrition_salt,
                 "protein": row.food_log_protein if row.food_log_protein is not None else row.nutrition_protein,
@@ -599,7 +672,18 @@ def update_food_log(db: Session, log_id: int, user_id: int, updates: dict[str, A
     if log is None:
         return None
 
-    allowed_fields = {"product_name", "calories", "fat", "sugar", "salt", "protein", "fiber", "carbs"}
+    allowed_fields = {
+        "product_name",
+        "calories",
+        "fat",
+        "saturated_fat",
+        "trans_fat",
+        "sugar",
+        "salt",
+        "protein",
+        "fiber",
+        "carbs",
+    }
     for field, val in updates.items():
         if field in allowed_fields and val is not None:
             setattr(log, field, val)

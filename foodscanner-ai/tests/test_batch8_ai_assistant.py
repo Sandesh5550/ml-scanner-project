@@ -84,34 +84,32 @@ def auth_user(db_session):
 @pytest.fixture(autouse=True)
 def seed_batch8_products(db_session):
     """Seed test products for Batch 8 chat and RAG tests."""
-    p1 = db_service.get_product_by_barcode(db_session, "8908000000001")
-    if not p1:
-        prod1 = db_service.create_product(
-            db_session,
-            {
-                "barcode": "8908000000001",
-                "product_name": "Batch8 Dark Chocolate Bar",
-                "brand": "CocoaCraft",
-                "nutriscore": "d",
-                "ingredients": "Cocoa mass, sugar, cocoa butter, emulsifier",
-                "additives": "E322",
-            },
-        )
-        db_service.create_nutrition(
-            db_session,
-            {
-                "product_id": prod1.id,
-                "calories": 530.0,
-                "fat": 32.0,
-                "saturated_fat": 19.0,
-                "sugar": 38.0,
-                "salt": 0.05,
-                "protein": 6.5,
-                "fiber": 8.0,
-                "carbs": 52.0,
-            },
-        )
-        db_session.commit()
+    prod1 = db_service.create_product(
+        db_session,
+        {
+            "barcode": "8908000000001",
+            "product_name": "Batch8 Dark Chocolate Bar",
+            "brand": "CocoaCraft",
+            "nutriscore": "d",
+            "ingredients": "Cocoa mass, sugar, cocoa butter, emulsifier",
+            "additives": "E322",
+        },
+    )
+    db_service.create_nutrition(
+        db_session,
+        {
+            "product_id": prod1.id,
+            "calories": 530.0,
+            "fat": 32.0,
+            "saturated_fat": 19.0,
+            "sugar": 38.0,
+            "salt": 0.05,
+            "protein": 6.5,
+            "fiber": 8.0,
+            "carbs": 52.0,
+        },
+    )
+    db_session.commit()
 
     p2 = db_service.get_product_by_barcode(db_session, "8908000000002")
     if not p2:
@@ -392,36 +390,31 @@ def test_chat_does_not_create_food_log(auth_user, db_session):
 # ==============================================================================
 # TEST 12: AI Does NOT Modify Health Score
 # ==============================================================================
-def test_chat_does_not_modify_health_score(auth_user, seed_batch8_products):
+def test_chat_does_not_modify_health_score(auth_user, seed_batch8_products, db_session):
     client = TestClient(app)
+    barcode = "8908000000001"
 
-    # Check deterministic health score
-    prod_data = {
-        "calories": 530.0,
-        "fat": 32.0,
-        "saturated_fat": 19.0,
-        "sugar": 38.0,
-        "salt": 0.05,
-        "protein": 6.5,
-        "fiber": 8.0,
-        "ingredients": "Cocoa mass, sugar, cocoa butter, emulsifier",
-    }
+    # 1. Fetch the exact product and nutrition record using its barcode
+    persisted_prod = db_service.get_product_by_barcode(db_session, barcode)
+    assert persisted_prod is not None
+
+    # 2. Calculate the expected score using the exact persisted product data and user's diet profile
     user_diet = getattr(auth_user["user"], "diet_type", None)
     if user_diet:
-        deterministic_score = compute_diet_aware_score(prod_data, user_diet)["health_score"]
+        authoritative_score = compute_diet_aware_score(persisted_prod, user_diet)["health_score"]
     else:
-        deterministic_score = compute_food_health_score(prod_data)["health_score"]
+        authoritative_score = compute_food_health_score(persisted_prod)["health_score"]
 
     res = client.post(
         "/chat",
-        json={"message": "Can you score this product?", "barcode": "8908000000001"},
+        json={"message": "Can you score this product?", "barcode": barcode},
         headers=auth_user["headers"],
     )
     assert res.status_code == 200
     data = res.json()
 
-    # The reported health score in response must match the deterministic score
-    assert data["health_score"] == deterministic_score
+    # 3. Compare the API response with the authoritative backend score
+    assert data["health_score"] == authoritative_score
 
 
 # ==============================================================================

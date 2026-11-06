@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.openfoodfacts_service import fetch_product_by_barcode
 from services.openfoodfacts_service import fetch_product_by_barcode_v2
-from ml_model.predict_nutriscore import predict_nutriscore
+from ml_model.predict_nutriscore import predict_nutriscore, predict_nutriscore_with_fallback
 from services.food_logger import get_remaining_calories, get_today_calories
 from services.ingredient_analyzer import analyze_ingredients
 from services.additive_analyzer import analyze_additives
@@ -33,9 +33,9 @@ def _analyze_and_log(
     diet_type: str | None = None,
 ) -> dict[str, Any]:
     if not product.get("nutriscore"):
-        predicted = predict_nutriscore(product)
+        predicted = predict_nutriscore_with_fallback(product)
         product["nutriscore"] = predicted
-        logger.info("NutriScore predicted by ML model")
+        logger.info("NutriScore predicted: %s", predicted)
 
     user_profile = {
         "max_calories": int(daily_calorie_limit or 2000),
@@ -113,6 +113,8 @@ def lookup_product(
                     "product_id": product_obj.id,
                     "calories": fetched_v2.get("calories"),
                     "fat": fetched_v2.get("fat"),
+                    "saturated_fat": fetched_v2.get("saturated_fat"),
+                    "trans_fat": fetched_v2.get("trans_fat"),
                     "sugar": fetched_v2.get("sugar"),
                     "salt": fetched_v2.get("salt"),
                     "protein": fetched_v2.get("protein"),
@@ -143,6 +145,8 @@ def lookup_product(
                     "product_id": product_obj.id,
                     "calories": dataset_product.get("calories"),
                     "fat": dataset_product.get("fat"),
+                    "saturated_fat": dataset_product.get("saturated_fat"),
+                    "trans_fat": dataset_product.get("trans_fat"),
                     "sugar": dataset_product.get("sugar"),
                     "salt": dataset_product.get("salt"),
                     "protein": dataset_product.get("protein"),
@@ -160,6 +164,8 @@ def lookup_product(
                 "product_id": product_obj.id,
                 "calories": fetched.get("calories"),
                 "fat": fetched.get("fat"),
+                "saturated_fat": fetched.get("saturated_fat"),
+                "trans_fat": fetched.get("trans_fat"),
                 "sugar": fetched.get("sugar"),
                 "salt": fetched.get("salt"),
                 "protein": fetched.get("protein"),

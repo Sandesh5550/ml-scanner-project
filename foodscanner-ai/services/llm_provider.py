@@ -332,6 +332,30 @@ class MockLLMProvider(BaseLLMProvider):
         return "\n".join(sections)
 
 
+def _sanitize_requests_exception(exc: Exception, api_key: Optional[str] = None) -> None:
+    """Defensively redact secret API keys and authorization headers from requests exceptions."""
+    targets = [getattr(exc, "request", None)]
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        targets.append(getattr(resp, "request", None))
+
+    for target in targets:
+        if target is not None and hasattr(target, "headers") and target.headers is not None:
+            for sensitive_header in ("x-goog-api-key", "authorization", "proxy-authorization"):
+                if sensitive_header in target.headers:
+                    target.headers[sensitive_header] = "[REDACTED]"
+
+
+def _sanitize_error_text(text: Any, api_key: Optional[str] = None) -> str:
+    """Scrub raw API keys and query-param secrets from exception and log message strings."""
+    msg = str(text or "")
+    if api_key:
+        msg = msg.replace(api_key, "***")
+    msg = re.sub(r"key=[^&\s]+", "key=***", msg)
+    msg = re.sub(r"AIza[0-9A-Za-z-_]{20,}", "***", msg)
+    return msg
+
+
 class GeminiProvider(BaseLLMProvider):
     """Google Gemini API Provider with bounded retries and credential redaction."""
 
@@ -361,7 +385,11 @@ class GeminiProvider(BaseLLMProvider):
         if not self.api_key:
             raise LLMConfigurationError("Gemini AI_API_KEY is missing")
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.api_key,
+        }
         payload = {
             "contents": [
                 {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}
@@ -375,7 +403,7 @@ class GeminiProvider(BaseLLMProvider):
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries):
             try:
-                resp = requests.post(url, json=payload, timeout=self.timeout)
+                resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
                 if resp.status_code == 200:
                     data = resp.json()
                     candidates = data.get("candidates") or []
@@ -395,23 +423,28 @@ class GeminiProvider(BaseLLMProvider):
                 raise LLMProviderError(f"Gemini API returned HTTP {resp.status_code}")
 
             except requests.exceptions.Timeout as exc:
+                _sanitize_requests_exception(exc, self.api_key)
                 last_error = exc
                 if attempt < self.max_retries - 1:
                     time.sleep(0.5)
                     continue
-                raise LLMUnavailableError(f"Gemini API timed out after {self.timeout}s") from exc
+                raise LLMUnavailableError(f"Gemini API timed out after {self.timeout}s") from None
 
             except requests.exceptions.RequestException as exc:
+                _sanitize_requests_exception(exc, self.api_key)
                 last_error = exc
                 if attempt < self.max_retries - 1:
                     time.sleep(0.5)
                     continue
-                # Sanitize error message to prevent accidental key exposure
-                safe_msg = re.sub(r"key=[^&\s]+", "key=***", str(exc))
-                raise LLMUnavailableError(f"Gemini network request failed: {safe_msg}") from exc
+                safe_msg = _sanitize_error_text(exc, self.api_key)
+                raise LLMUnavailableError(f"Gemini network request failed: {safe_msg}") from None
 
         if last_error:
-            raise LLMUnavailableError(f"Gemini API call failed after {self.max_retries} attempts: {last_error}")
+            _sanitize_requests_exception(last_error, self.api_key)
+            safe_err = _sanitize_error_text(last_error, self.api_key)
+            raise LLMUnavailableError(
+                f"Gemini API call failed after {self.max_retries} attempts: {safe_err}"
+            ) from None
         raise LLMProviderError("Gemini API call failed without explicit error.")
 
 

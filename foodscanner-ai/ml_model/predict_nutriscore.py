@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
 from pathlib import Path
 from typing import Any, Optional
 
 import joblib
 import numpy as np
 
+
+logger = logging.getLogger(__name__)
 
 MODEL_PATH = Path(__file__).resolve().parent / "ensemble_model.pkl"
 LEGACY_MODEL_PATH = Path(__file__).resolve().parent / "model.pkl"
@@ -56,7 +59,7 @@ def _to_float(value: Any) -> Optional[float]:
 
 def calculate_heuristic_nutriscore(nutrition_dict: dict[str, Any]) -> str:
     """Explicit deterministic heuristic NutriScore calculation.
-    
+
     Used only when deterministic fallback is explicitly requested by callers.
     """
     calories = _to_float(nutrition_dict.get("calories")) or 0.0
@@ -85,46 +88,97 @@ def calculate_heuristic_nutriscore(nutrition_dict: dict[str, Any]) -> str:
     return "E"
 
 
-def predict_nutriscore(nutrition_dict: dict[str, Any], model_path: Path = MODEL_PATH) -> str:
-    """Predict NutriScore grade (A-E) using the trained scikit-learn ensemble model.
-    
-    Strictly validates model artifact and inputs. Raises FileNotFoundError or ModelArtifactError
-    if the model is missing or corrupt. Does NOT silently default to heuristic.
+def extract_feature_vector(
+    nutrition_dict: dict[str, Any],
+    features: list[str] = EXPECTED_FEATURES,
+    clip_to_bounds: bool = True,
+) -> tuple[list[float], dict[str, float]]:
+    """Extract and validate the 7-feature vector from a nutrition dictionary.
+
+    Imputes None, non-numeric, or missing values to 0.0 for backward compatibility.
+    When clip_to_bounds is True, applies training-aligned physical bounds:
+      - calories: [0.0, 950.0]
+      - all other nutrients (per 100g): [0.0, 100.0]
+    Returns (feature_vector, feature_values_dict).
     """
-    bundle = load_bundle(model_path)
-    model = bundle["model"]
-    features: list[str] = list(bundle["features"])
+    if not isinstance(nutrition_dict, dict):
+        raise TypeError(f"Expected nutrition_dict to be a dict, got {type(nutrition_dict).__name__}")
 
-    x = []
+    vector: list[float] = []
+    values_dict: dict[str, float] = {}
     for f in features:
-        v = _to_float(nutrition_dict.get(f))
-        x.append(0.0 if v is None else v)
+        raw = _to_float(nutrition_dict.get(f))
+        val = 0.0 if raw is None else raw
+        if clip_to_bounds:
+            if f == "calories":
+                val = max(0.0, min(float(val), 950.0))
+            else:
+                val = max(0.0, min(float(val), 100.0))
+        val = float(val)
+        vector.append(val)
+        values_dict[f] = val
+    return vector, values_dict
 
-    X = np.asarray([x], dtype=np.float32)
+
+def predict_nutriscore(
+    nutrition_dict: dict[str, Any],
+    model_path: Path = MODEL_PATH,
+    fallback_to_heuristic: bool = False,
+) -> str:
+    """Predict NutriScore grade (A-E) using the trained scikit-learn ensemble model.
+
+    Strictly validates model artifact and inputs. Raises FileNotFoundError or ModelArtifactError
+    if the model is missing or corrupt unless fallback_to_heuristic=True.
+    Does NOT catch unrelated programming errors (e.g. non-dict inputs).
+    """
+    if not isinstance(nutrition_dict, dict):
+        raise TypeError(f"Expected nutrition_dict to be a dict, got {type(nutrition_dict).__name__}")
+
     try:
-        pred = model.predict(X)[0]
-    except Exception as exc:
-        raise ModelArtifactError(f"Prediction failed on feature vector {x}: {exc}") from exc
+        bundle = load_bundle(model_path)
+        model = bundle["model"]
+        features: list[str] = list(bundle.get("features", EXPECTED_FEATURES))
 
-    return str(pred).upper()
+        x, _ = extract_feature_vector(nutrition_dict, features=features)
+        X = np.asarray([x], dtype=np.float32)
+        try:
+            pred = model.predict(X)[0]
+        except Exception as exc:
+            raise ModelArtifactError(f"Prediction failed on feature vector {x}: {exc}") from exc
+
+        return str(pred).upper()
+    except (FileNotFoundError, ModelArtifactError) as exc:
+        if fallback_to_heuristic:
+            logger.warning("ML NutriScore prediction unavailable (%s); using controlled heuristic fallback", exc)
+            return calculate_heuristic_nutriscore(nutrition_dict)
+        raise
+
+
+def predict_nutriscore_with_fallback(
+    nutrition_dict: dict[str, Any],
+    model_path: Path = MODEL_PATH,
+) -> str:
+    """Predict NutriScore grade (A-E) using the trained ML model with controlled heuristic fallback.
+
+    Falls back to calculate_heuristic_nutriscore ONLY on model-loading or prediction failures
+    (FileNotFoundError, ModelArtifactError).
+    Does NOT catch unrelated programming errors.
+    """
+    return predict_nutriscore(nutrition_dict, model_path=model_path, fallback_to_heuristic=True)
 
 
 def predict_nutriscore_details(
     nutrition_dict: dict[str, Any], model_path: Path = MODEL_PATH
 ) -> dict[str, Any]:
     """Predict NutriScore with full metadata, confidence probabilities, and feature values."""
+    if not isinstance(nutrition_dict, dict):
+        raise TypeError(f"Expected nutrition_dict to be a dict, got {type(nutrition_dict).__name__}")
+
     bundle = load_bundle(model_path)
     model = bundle["model"]
-    features: list[str] = list(bundle["features"])
+    features: list[str] = list(bundle.get("features", EXPECTED_FEATURES))
 
-    feature_values: dict[str, float] = {}
-    x = []
-    for f in features:
-        v = _to_float(nutrition_dict.get(f))
-        val = 0.0 if v is None else v
-        feature_values[f] = val
-        x.append(val)
-
+    x, feature_values = extract_feature_vector(nutrition_dict, features=features)
     X = np.asarray([x], dtype=np.float32)
     try:
         pred = model.predict(X)[0]

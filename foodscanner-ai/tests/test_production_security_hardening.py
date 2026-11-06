@@ -119,10 +119,10 @@ class TestSlidingWindowRateLimiter:
         mock_req.headers = {}
         assert get_client_key(mock_req, user_id=10) == "user:10"
 
-        # Anonymous with X-Forwarded-For (when trust proxy enabled)
+        # Anonymous with X-Forwarded-For (when trust proxy enabled, proxy appends client IP)
         monkeypatch.setenv("TRUST_PROXY_HEADERS", "true")
         mock_req_xf = MagicMock()
-        mock_req_xf.headers = {"x-forwarded-for": "203.0.113.195, 70.41.3.18"}
+        mock_req_xf.headers = {"x-forwarded-for": "198.51.100.1, 203.0.113.195"}
         assert get_client_key(mock_req_xf, user_id=None) == "ip:203.0.113.195"
 
         # Anonymous with X-Forwarded-For when trust proxy is disabled (prevents IP spoofing)

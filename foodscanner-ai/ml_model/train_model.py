@@ -293,5 +293,12 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    if args.advanced:
+        parser.error(
+            "The --advanced flag is disabled in production to protect the deployed 7-feature "
+            "model artifact (ensemble_model.pkl). Advanced 40-feature training is an experimental "
+            "workflow and must not overwrite production models."
+        )
+
     train_model()
 

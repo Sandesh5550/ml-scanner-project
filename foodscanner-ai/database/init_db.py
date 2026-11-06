@@ -80,9 +80,16 @@ def run_migrations(engine: Engine) -> None:
                 log_cols = {c["name"] for c in inspector.get_columns("daily_food_log")}
                 if "user_id" not in log_cols:
                     conn.execute(text("ALTER TABLE daily_food_log ADD COLUMN user_id INTEGER DEFAULT 1"))
-                for macro_col in ("fat", "sugar", "salt", "protein", "fiber", "carbs"):
+                for macro_col in ("fat", "saturated_fat", "trans_fat", "sugar", "salt", "protein", "fiber", "carbs"):
                     if macro_col not in log_cols:
                         conn.execute(text(f"ALTER TABLE daily_food_log ADD COLUMN {macro_col} FLOAT"))
+
+            # Nutrition table migrations
+            if "nutrition" in table_names:
+                n_cols = {c["name"] for c in inspector.get_columns("nutrition")}
+                for fat_col in ("saturated_fat", "trans_fat"):
+                    if fat_col not in n_cols:
+                        conn.execute(text(f"ALTER TABLE nutrition ADD COLUMN {fat_col} FLOAT"))
 
             # OCR jobs table migrations
             if "ocr_jobs" not in table_names:
@@ -260,9 +267,9 @@ def init_db(
                 f"Database is versioned by Alembic (current revision: {current_rev}). In-process auto-upgrade is disabled during startup "
                 "to prevent multi-worker concurrency. Ensure 'alembic upgrade head' is executed as a deployment step."
             )
-            if current_rev != "002_add_ocr_jobs_and_allergens":
+            if current_rev != "003_add_saturated_and_trans_fat":
                 logger.warning(
-                    f"DATABASE MIGRATION WARNING: Current database revision is '{current_rev}', which is behind head ('002_add_ocr_jobs_and_allergens'). "
+                    f"DATABASE MIGRATION WARNING: Current database revision is '{current_rev}', which is behind head ('003_add_saturated_and_trans_fat'). "
                     "Pending migrations have not been applied. Run 'alembic upgrade head' before serving production traffic."
                 )
     else:
