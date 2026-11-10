@@ -50,20 +50,16 @@ def resolve_product_context(
     if barcode and db is not None:
         bcode = str(barcode).strip()
         if bcode:
-            prod = db_service.get_product_by_barcode(db, bcode)
-            if prod is None:
-                try:
-                    user_id = int(getattr(user, "id", 1) or 1)
-                    prod = lookup_product(
-                        db,
-                        bcode,
-                        user_id=user_id,
-                        daily_calorie_limit=int(daily_limit),
-                        diet_type=diet_type,
-                    )
-                except Exception as exc:
-                    logger.warning("Barcode lookup error for %s: %s", bcode, exc)
-                    prod = None
+            from services.product_data_service import get_default_product_data_service
+            from services.off_client import canonical_to_legacy_dict
+            from services.scoring_engine import get_default_scoring_engine
+
+            pds = get_default_product_data_service()
+            canonical = pds.get_product_by_barcode(db=db, barcode=bcode)
+            if canonical is not None:
+                prod = canonical_to_legacy_dict(canonical)
+            else:
+                prod = None
 
             if prod is not None:
                 nutr = {
@@ -77,14 +73,11 @@ def resolve_product_context(
                     "salt": _to_float(prod.get("salt")),
                 }
 
-                # Deterministic scoring
-                if diet_type:
-                    health = compute_diet_aware_score(prod, diet_type)
-                else:
-                    health = compute_food_health_score(prod)
-
-                final_dec = health.get("decision")
-                reasons = [health.get("reason")] if health.get("reason") else []
+                # Authoritative deterministic scoring via UniversalScoringEngine
+                engine = get_default_scoring_engine()
+                assessment = engine.score_product(canonical, diet_type=diet_type)
+                final_dec = assessment.decision
+                reasons = assessment.reasons if assessment.reasons else ([assessment.reason] if assessment.reason else [])
 
                 # Healthier alternatives if not safe
                 alts = []
@@ -97,15 +90,17 @@ def resolve_product_context(
                     "product_name": prod.get("product_name"),
                     "brand": prod.get("brand"),
                     "barcode": prod.get("barcode") or bcode,
-                    "nutriscore": prod.get("nutriscore"),
+                    "nutriscore": prod.get("nutriscore") or assessment.nutriscore or assessment.predicted_nutriscore,
                     "nutrition": nutr,
                     "ingredients": prod.get("ingredients"),
                     "additives": prod.get("additives"),
-                    "health_score": health.get("health_score"),
+                    "health_score": assessment.health_score,
                     "final_decision": final_dec,
                     "reasons": reasons,
-                    "diet_note": health.get("diet_note"),
+                    "diet_note": assessment.diet_note,
                     "recommendations": alts,
+                    "assessment_status": assessment.assessment_status.value,
+                    "overall_confidence": assessment.overall_confidence.value,
                 }
 
     # 2. Client supplied product_context fallback

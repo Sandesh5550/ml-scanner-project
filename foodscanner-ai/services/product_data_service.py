@@ -559,3 +559,16 @@ def get_default_product_data_service() -> ProductDataService:
         if _DEFAULT_PRODUCT_DATA_SERVICE is None:
             _DEFAULT_PRODUCT_DATA_SERVICE = ProductDataService()
         return _DEFAULT_PRODUCT_DATA_SERVICE
+
+
+def reset_default_product_data_service() -> None:
+    """Reset process-wide singleton ProductDataService instance (used in test isolation)."""
+    global _DEFAULT_PRODUCT_DATA_SERVICE
+    with _SERVICE_INIT_LOCK:
+        if _DEFAULT_PRODUCT_DATA_SERVICE is not None:
+            try:
+                if hasattr(_DEFAULT_PRODUCT_DATA_SERVICE, "client") and hasattr(_DEFAULT_PRODUCT_DATA_SERVICE.client, "rate_limiter"):
+                    _DEFAULT_PRODUCT_DATA_SERVICE.client.rate_limiter.reset()
+            except Exception:
+                pass
+        _DEFAULT_PRODUCT_DATA_SERVICE = None

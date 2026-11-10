@@ -233,12 +233,17 @@ def _evaluate_candidate(
         "fiber": c_fiber,
         "carbs": _to_float(cand_row.get("carbs")),
     }
-    from services.food_health_score import compute_food_health_score
-    cand_health = compute_food_health_score(cand_nutr_for_score)
-    cand_score = cand_health.get("health_score")
-    cand_decision = cand_health.get("decision")
+    from services.scoring_engine import get_default_scoring_engine
+    engine = get_default_scoring_engine()
+    assessment = engine.score_product(cand_nutr_for_score)
+    cand_score = assessment.health_score
+    cand_decision = assessment.decision
 
-    cand_ns = cand_row.get("nutriscore")
+    # Reject unassessable, insufficient, or avoid products from being recommended as healthy alternatives
+    if assessment.assessment_status.value == "UNASSESSABLE" or cand_decision in ("UNASSESSABLE", "INSUFFICIENT_DATA", "AVOID"):
+        return None
+
+    cand_ns = cand_row.get("nutriscore") or assessment.nutriscore or assessment.predicted_nutriscore
     if not cand_ns:
         from ml_model.predict_nutriscore import predict_nutriscore_with_fallback
         cand_ns = predict_nutriscore_with_fallback(cand_nutr_for_score)

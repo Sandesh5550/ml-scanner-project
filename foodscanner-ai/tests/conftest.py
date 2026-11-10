@@ -14,6 +14,8 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import pytest
 from services.rate_limiter import get_rate_limiter
+from services.off_client import reset_default_off_client
+from services.product_data_service import reset_default_product_data_service
 
 
 @pytest.fixture(autouse=True)
@@ -21,5 +23,9 @@ def reset_rate_limits():
     """Reset process-local rate limiter before and after each test for clean isolation."""
     limiter = get_rate_limiter()
     limiter.reset()
+    reset_default_off_client()
+    reset_default_product_data_service()
     yield
     limiter.reset()
+    reset_default_off_client()
+    reset_default_product_data_service()

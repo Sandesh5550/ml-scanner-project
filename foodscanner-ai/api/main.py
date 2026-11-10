@@ -38,6 +38,9 @@ from services.food_health_score import compute_food_health_score, compute_diet_a
 from services.final_decision_engine import compute_final_decision
 from services.decision_explainer import build_decision_reasons
 from services.claim_verification import verify_claims
+from services.product_data_service import get_default_product_data_service
+from services.scoring_engine import get_default_scoring_engine
+from services.off_client import canonical_to_legacy_dict
 from services.ocr_service import (
     process_image_ocr,
     parse_structured_ocr,
@@ -869,28 +872,23 @@ def analyze(
     product["ingredient_analysis"] = analyze_ingredients(product.get("ingredients"))
     product["additive_analysis"] = analyze_additives(product.get("additives"))
 
+    engine = get_default_scoring_engine()
     diet_type = getattr(current_user, "diet_type", None)
-    if diet_type:
-        health = compute_diet_aware_score(product, diet_type)
-    else:
-        health = compute_food_health_score(product)
+    assessment = engine.score_product(product, diet_type=diet_type)
 
     today_cal = db_service.get_today_calories(db, user_id=int(current_user.id))
     daily_limit = float(getattr(current_user, "daily_calorie_limit", None) or 2000)
     remaining_cal = daily_limit - today_cal
 
-    final = compute_final_decision(
-        health,
+    final = engine.evaluate_final_decision(
+        assessment.to_dict(),
         remaining_calories=float(remaining_cal),
         product_calories=float(product.get("calories") or 0.0),
     )
     product["health_score"] = final.get("health_score")
     product["final_decision"] = final.get("final_decision")
-    product["reasons"] = build_decision_reasons(product, remaining_calories=float(remaining_cal))
-
-    diet_note = final.get("diet_note")
-    if diet_note is None and isinstance(health, dict):
-        diet_note = health.get("diet_note")
+    product["reasons"] = assessment.reasons if assessment.reasons else build_decision_reasons(product, remaining_calories=float(remaining_cal))
+    diet_note = assessment.diet_note
     product["diet_note"] = diet_note
 
     nutrition_per_100g = {
@@ -976,7 +974,12 @@ def analyze(
         },
         "personalized_analysis": personalized,
         "explanation": explanation,
+        "assessment_status": assessment.assessment_status.value,
+        "overall_confidence": assessment.overall_confidence.value,
     }
+
+    if assessment.score_range:
+        analysis_res["score_range"] = assessment.score_range.model_dump()
 
     if req.claims:
         analysis_res["claim_verification"] = verify_claims(
@@ -1104,32 +1107,33 @@ def get_product(
     if not barcode.isdigit() or not (8 <= len(barcode) <= 14):
         raise HTTPException(status_code=400, detail="invalid barcode")
 
-    product = db_service.get_product_by_barcode(db, barcode)
-    if product is None:
+    pds = get_default_product_data_service()
+    canonical = pds.get_product_by_barcode(db=db, barcode=barcode)
+    if canonical is None:
         raise HTTPException(status_code=404, detail="product not found")
+
+    product = canonical_to_legacy_dict(canonical)
 
     product["ingredient_analysis"] = analyze_ingredients(product.get("ingredients"))
     product["additive_analysis"] = analyze_additives(product.get("additives"))
 
+    engine = get_default_scoring_engine()
     diet_type = getattr(current_user, "diet_type", None)
-    if diet_type:
-        health = compute_diet_aware_score(product, diet_type)
-    else:
-        health = compute_food_health_score(product)
+    assessment = engine.score_product(canonical, diet_type=diet_type)
 
     today_cal = db_service.get_today_calories(db, user_id=int(current_user.id)) if current_user else 0.0
     daily_limit = float(getattr(current_user, "daily_calorie_limit", None) or 2000)
     remaining_cal = daily_limit - today_cal
 
-    final = compute_final_decision(
-        health,
+    final = engine.evaluate_final_decision(
+        assessment.to_dict(),
         remaining_calories=float(remaining_cal),
         product_calories=float(product.get("calories") or 0.0),
     )
     product["health_score"] = final.get("health_score")
     product["final_decision"] = final.get("final_decision")
-    product["reasons"] = build_decision_reasons(product, remaining_calories=float(remaining_cal))
-    product["diet_note"] = health.get("diet_note")
+    product["reasons"] = assessment.reasons if assessment.reasons else build_decision_reasons(product, remaining_calories=float(remaining_cal))
+    product["diet_note"] = assessment.diet_note
 
     personalized = get_personalized_analysis(
         product=product,
@@ -1149,7 +1153,7 @@ def get_product(
         "reasons": product.get("reasons"),
     }
 
-    return {
+    resp = {
         "product": {
             "name": product.get("product_name"),
             "brand": product.get("brand"),
@@ -1172,7 +1176,14 @@ def get_product(
         "diet_note": product.get("diet_note"),
         "personalized_analysis": personalized,
         "explanation": explanation,
+        "assessment_status": assessment.assessment_status.value,
+        "overall_confidence": assessment.overall_confidence.value,
     }
+
+    if assessment.score_range:
+        resp["score_range"] = assessment.score_range.model_dump()
+
+    return resp
 
 
 @app.get("/today", tags=["tracking"])
@@ -1309,6 +1320,12 @@ def scan(
     scan_response["allergen_warnings"] = scan_response["personalized_analysis"].get("allergen_warnings", [])
     scan_response["detected_allergens"] = scan_response["personalized_analysis"].get("detected_allergens", [])
     scan_response["explanation"] = explain_score(result, getattr(current_user, "diet_type", None))
+    if result.get("assessment_status"):
+        scan_response["assessment_status"] = result.get("assessment_status")
+    if result.get("overall_confidence"):
+        scan_response["overall_confidence"] = result.get("overall_confidence")
+    if result.get("score_range"):
+        scan_response["score_range"] = result.get("score_range")
 
 
     if req.claims:
@@ -1338,7 +1355,9 @@ def verify_claims_endpoint(
     if req.barcode:
         bcode = str(req.barcode).strip()
         if bcode:
-            product = db_service.get_product_by_barcode(db, bcode)
+            pds = get_default_product_data_service()
+            canonical = pds.get_product_by_barcode(db=db, barcode=bcode)
+            product = canonical_to_legacy_dict(canonical) if canonical else None
             if product:
                 db_nutrition = {
                     "calories": product.get("calories"),
@@ -1375,7 +1394,9 @@ def alternatives_endpoint(
 
     # If barcode provided and name or nutrition missing, look up product
     if barcode:
-        prod = db_service.get_product_by_barcode(db, barcode)
+        pds = get_default_product_data_service()
+        canonical = pds.get_product_by_barcode(db=db, barcode=barcode)
+        prod = canonical_to_legacy_dict(canonical) if canonical else None
         if prod:
             if not name:
                 name = prod.get("product_name") or ""
@@ -1435,10 +1456,12 @@ def get_alternatives_by_barcode(
     if not barcode_str:
         raise HTTPException(status_code=400, detail="barcode is required")
 
-    prod = db_service.get_product_by_barcode(db, barcode_str)
-    if prod is None:
+    pds = get_default_product_data_service()
+    canonical = pds.get_product_by_barcode(db=db, barcode=barcode_str)
+    if canonical is None:
         raise HTTPException(status_code=404, detail="product not found")
 
+    prod = canonical_to_legacy_dict(canonical)
     nutrition = {
         "calories": prod.get("calories"),
         "fat": prod.get("fat"),
@@ -1477,14 +1500,16 @@ def compare(
         raise HTTPException(status_code=400, detail="product_a and product_b are required")
 
     def _find_product(query: str, param_name: str) -> dict:
-        if query.isdigit() and 8 <= len(query) <= 14:
-            p = db_service.get_product_by_barcode(db, query)
-            if p is not None:
-                return p
-        p = db_service.get_product_by_name_fuzzy(db, query, min_similarity=80.0)
+        clean_q = query.strip()
+        pds = get_default_product_data_service()
+        if clean_q.isdigit() and 8 <= len(clean_q) <= 14:
+            canonical = pds.get_product_by_barcode(db=db, barcode=clean_q)
+            if canonical is not None:
+                return canonical_to_legacy_dict(canonical)
+        p = db_service.get_product_by_name_fuzzy(db, clean_q, min_similarity=80.0)
         if p is not None:
             return p
-        ds = _csv_fuzzy_lookup(query, threshold=75.0)
+        ds = _csv_fuzzy_lookup(clean_q, threshold=75.0)
         if ds is not None:
             return ds
         raise HTTPException(status_code=404, detail=f"{param_name} not found")
@@ -1504,23 +1529,20 @@ def compare(
     if not b_enriched.get("additive_analysis"):
         b_enriched["additive_analysis"] = analyze_additives(b_enriched.get("additives"))
 
+    engine = get_default_scoring_engine()
     diet_type = getattr(current_user, "diet_type", None)
-    if diet_type:
-        a_health = compute_diet_aware_score(a_enriched, diet_type)
-        b_health = compute_diet_aware_score(b_enriched, diet_type)
-    else:
-        a_health = compute_food_health_score(a_enriched)
-        b_health = compute_food_health_score(b_enriched)
+    a_assessment = engine.score_product(a_enriched, diet_type=diet_type)
+    b_assessment = engine.score_product(b_enriched, diet_type=diet_type)
 
-    a_score_val = a_health.get("health_score")
-    b_score_val = b_health.get("health_score")
+    a_score_val = a_assessment.health_score
+    b_score_val = b_assessment.health_score
 
-    a_nutriscore = a.get("nutriscore")
+    a_nutriscore = a.get("nutriscore") or a_assessment.nutriscore or a_assessment.predicted_nutriscore
     if not a_nutriscore:
         from ml_model.predict_nutriscore import predict_nutriscore_with_fallback
         a_nutriscore = predict_nutriscore_with_fallback(a)
 
-    b_nutriscore = b.get("nutriscore")
+    b_nutriscore = b.get("nutriscore") or b_assessment.nutriscore or b_assessment.predicted_nutriscore
     if not b_nutriscore:
         from ml_model.predict_nutriscore import predict_nutriscore_with_fallback
         b_nutriscore = predict_nutriscore_with_fallback(b)
@@ -1617,6 +1639,8 @@ def compare(
             "nutriscore": a_nutriscore,
             "nutrition": a_nutrition,
             "match": a.get("_match"),
+            "assessment_status": a_assessment.assessment_status.value,
+            "overall_confidence": a_assessment.overall_confidence.value,
         },
         "product_b": {
             "name": b.get("product_name"),
@@ -1626,6 +1650,8 @@ def compare(
             "nutriscore": b_nutriscore,
             "nutrition": b_nutrition,
             "match": b.get("_match"),
+            "assessment_status": b_assessment.assessment_status.value,
+            "overall_confidence": b_assessment.overall_confidence.value,
         },
         "healthier_product": healthier,
         "reasons": reasons,
@@ -1762,21 +1788,12 @@ def explain_product(
     if not barcode_str:
         raise HTTPException(status_code=400, detail="barcode is required")
 
-    product = db_service.get_product_by_barcode(db, barcode_str)
-    if product is None:
-        try:
-            product = lookup_product(
-                db,
-                barcode_str,
-                user_id=int(current_user.id),
-                daily_calorie_limit=int(getattr(current_user, "daily_calorie_limit", None) or 2000),
-                diet_type=getattr(current_user, "diet_type", None),
-            )
-        except Exception:
-            product = None
-
-    if product is None:
+    pds = get_default_product_data_service()
+    canonical = pds.get_product_by_barcode(db=db, barcode=barcode_str)
+    if canonical is None:
         raise HTTPException(status_code=404, detail="product not found")
+
+    product = canonical_to_legacy_dict(canonical)
 
     # Enrich with ingredient/additive analysis for explanation if missing
     if not product.get("ingredient_analysis"):

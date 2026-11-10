@@ -21,6 +21,7 @@ from services.final_decision_engine import compute_final_decision
 from services.decision_explainer import build_decision_reasons
 from services import db_service
 from services.product_data_service import get_default_product_data_service
+from services.scoring_engine import get_default_scoring_engine
 
 
 logger = logging.getLogger(__name__)
@@ -52,20 +53,22 @@ def _analyze_and_log(
     product["ingredient_analysis"] = analyze_ingredients(product.get("ingredients"))
     product["additive_analysis"] = analyze_additives(product.get("additives"))
 
-    if diet_type:
-        health = compute_diet_aware_score(product, diet_type)
-        product["diet_note"] = health.get("diet_note")
-    else:
-        health = compute_food_health_score(product)
+    engine = get_default_scoring_engine()
+    assessment = engine.score_product(product, diet_type=diet_type)
+    product["diet_note"] = assessment.diet_note
+    product["assessment_status"] = assessment.assessment_status.value
+    product["overall_confidence"] = assessment.overall_confidence.value
+    if assessment.score_range:
+        product["score_range"] = assessment.score_range.model_dump()
 
-    final = compute_final_decision(
-        health,
+    final = engine.evaluate_final_decision(
+        assessment.to_dict(),
         remaining_calories=float(remaining_calories),
         product_calories=float(product.get("calories") or 0.0),
     )
     product["health_score"] = final.get("health_score")
     product["final_decision"] = final.get("final_decision")
-    product["reasons"] = build_decision_reasons(product, remaining_calories)
+    product["reasons"] = assessment.reasons if assessment.reasons else build_decision_reasons(product, remaining_calories)
     logger.info("Recommendation generated: %s", product.get("final_decision"))
 
     db_service.log_scan(

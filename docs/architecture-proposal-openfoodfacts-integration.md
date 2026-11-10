@@ -304,15 +304,15 @@ flowchart TD
 ```
 
 ### B. Diet-Specific Mandatory Requirements
-- **Diabetic Diet**: `sugar` **AND** `carbs` are strictly mandatory. Missing either yields `UNASSESSABLE_DIABETIC`.
-- **Low-Sodium Diet**: `salt` **OR** `sodium` is strictly mandatory. Missing both yields `UNASSESSABLE_SODIUM`.
-- **Vegan / Vegetarian Diet**: `ingredients` text is strictly mandatory. Missing yields `UNASSESSABLE_INGREDIENTS`.
-- **Calorie Budget / Goal Tracking**: `calories` is strictly mandatory.
+- **Diabetic Diet**: `sugar` **AND** `carbs` are strictly mandatory. Missing either yields `is_diet_assessable: false` with explicit note: `"Missing [field] disclosure required for diabetic assessment"`. Sugar $>15$g/100g forces `AVOID`; sugar $>5$g/100g caps at `MODERATE`.
+- **Low-Sodium Diet**: `salt` **OR** `sodium` is strictly mandatory. Missing both yields `is_diet_assessable: false`. Salt $>1.5$g/100g caps at `MODERATE`; salt penalty is tripled ($1\times$ base + $2\times$ diet = $3\times$ total).
+- **Vegan / Vegetarian Diet**: `ingredients` text is strictly mandatory ($\ge 3$ characters). Missing ingredients yields `is_diet_assessable: false` and prevents false classification. Animal-derived ingredients force `AVOID` ($-30$ penalty).
+- **Calorie Budget / Goal Tracking**: `calories` is strictly mandatory. If product calories exceed user's remaining calories, `SAFE` is demoted to `MODERATE`, and `MODERATE` or `INCOMPLETE_DATA` is demoted to `AVOID`.
 
 ### C. Salt & Sodium Conversion Standards
 $$\text{Salt (g)} = \text{Sodium (g)} \times 2.5$$
 - If declared `sodium` is in milligrams: $\text{sodium (g)} = \text{sodium (mg)} / 1000.0$.
-- If both are declared: verify $|\text{salt} - \text{sodium} \times 2.5| \le 0.1$. If inconsistent, prefer package `salt_100g`.
+- Package declared `salt` strictly takes precedence over converted sodium for scoring. Source values in products remain unmutated.
 
 ### D. Preserved Scoring Weights & Thresholds
 All existing verified scoring weights remain 100% unchanged:
@@ -327,7 +327,84 @@ All existing verified scoring weights remain 100% unchanged:
 - NutriScore adjustments: `A (+15)`, `B (+8)`, `C (0)`, `D (-10)`, `E (-20)`.
 - Decision thresholds: `>=70: SAFE`, `45-69: MODERATE`, `<45: AVOID`.
 
----
+### E. Universal Engine Architecture (`UniversalScoringEngine`)
+The single authoritative scoring engine provides:
+1. **Input Normalization**: Accepts `CanonicalProduct`, database models, or legacy dictionaries. Safely extracts nutrients per 100g using `_get_first_not_none` and validates non-negative constraints with `safe_nutrition_float`. Explicit `0.0` values are strictly preserved and never treated as missing.
+2. **Deterministic Bounded Score Ranges**: For `PARTIALLY_ASSESSABLE` products, calculates exact $[min\_score, max\_score]$ bounds where $min\_score \le max\_score$. Worst-case regulatory penalties are applied only to missing mandatory dimensions.
+3. **Pure & Side-Effect Free**: Performs zero database writes, zero external network calls, zero scan history writes, and zero mutation of input objects.
+4. **Structured Typed Output (`ScoringAssessment`)**: Fully typed Pydantic v2 model supporting `.to_legacy_health_dict()`, `.to_dict()`, and direct dictionary subscripting (`result["health_score"]`) for seamless backwards compatibility.
+5. **Legacy Service Delegation**:
+   - `services/food_health_score.py`: `compute_food_health_score` and `compute_diet_aware_score` delegate to `UniversalScoringEngine`.
+   - `services/final_decision_engine.py`: `compute_final_decision` delegates to `UniversalScoringEngine.evaluate_final_decision`.
+   - `services/score_explainer.py`: `explain_score` delegates to `UniversalScoringEngine.explain_product_score`.
+
+### F. Phase 5 Test Coverage & Verification
+- Dedicated engine test suite: `foodscanner-ai/tests/test_scoring_engine.py` (38 test cases passing).
+- Full multi-module regression suite: 289 tests passing across schemas, models, services, migrations, and APIs.
+- Mobile regression suite: 94 tests passing with zero failures.
+- Benchmark validation: Maggi Noodles (31, AVOID), Parle-G (0, AVOID), Amul Butter (0, AVOID), Kurkure (3, AVOID), Coca-Cola (50, MODERATE).
+
+### G. Phase 6 — Complete Backend Endpoint Refactoring
+
+Phase 6 unifies all backend endpoints onto `ProductDataService` for product retrieval and `UniversalScoringEngine` for authoritative scoring.
+
+#### 1. Endpoint Integration Architecture
+All eight backend endpoints have been refactored according to strict architectural contracts:
+
+1. **`GET /product/{barcode}`**:
+   - Uses `ProductDataService.get_product_by_barcode(db, barcode)`.
+   - On local DB miss, queries resilient OpenFoodFacts client with quality-aware merge and local database caching, falling back to curated CSV datasets.
+   - Authoritative assessment computed via `UniversalScoringEngine.score_product()`.
+   - Preserves exact response JSON structure while enriching with `assessment_status`, `overall_confidence`, and bounded `score_range` for partial disclosures.
+   - **Scan History Isolation**: Pure read operation; strictly does NOT write to `scan_history`.
+
+2. **`POST /scan`**:
+   - Primary explicit barcode scan entry point.
+   - Retrieves product via `ProductDataService` and evaluates via `UniversalScoringEngine`.
+   - **Exclusive Scan History Logging**: Sole endpoint that writes to `scan_history`.
+   - Returns backward-compatible response with `assessment_status`, `overall_confidence`, and `score_range`.
+
+3. **`GET /search`**:
+   - Searches local DB, curated Indian foods dataset, and OpenFoodFacts dataset with deduplication and ranking.
+   - No fake scores assigned; pure read operation with zero scan history side effects.
+
+4. **`POST /analyze`**:
+   - Evaluates user-supplied nutritional values and ingredients through `UniversalScoringEngine.score_product()`.
+   - Respects `ASSESSABLE`, `PARTIALLY_ASSESSABLE`, and `UNASSESSABLE` policies. Sets `health_score = None` when mandatory values are missing.
+   - Preserves explicit `0.0` values (no penalty) vs `None` (missing disclosure).
+   - Zero scan history side effects.
+
+5. **`POST /compare`**:
+   - Retrieves requested products via `ProductDataService`, resolving unseen barcodes from OpenFoodFacts and caching them locally.
+   - Evaluates both items through `UniversalScoringEngine`. Never fabricates scores for incomplete products.
+   - Returns factual nutrient comparisons and comparison winner ("TIE" if unassessable or equal).
+   - Zero scan history side effects.
+
+6. **`GET /explain/{barcode}`**:
+   - Resolves product through `ProductDataService` without invoking `lookup_product`.
+   - Returns deterministic scoring ledger (`base_score=100`, step-by-step penalties/bonuses, factor breakdown, `assessment_status`).
+   - **Scan History Isolation**: Eliminates the previous unintended scan history pollution bug on DB miss. Zero scan history writes.
+
+7. **`POST /alternatives` & `GET /alternatives/{barcode}`**:
+   - Resolves product through `ProductDataService` when barcode is provided.
+   - `get_healthier_alternatives` evaluates candidates using `UniversalScoringEngine`. Rejects `UNASSESSABLE` or `AVOID` items from being recommended as healthy.
+   - Zero scan history writes.
+
+8. **`POST /chat`**:
+   - Resolves product context via `ProductDataService` and grounds LLM facts in `UniversalScoringEngine` scores.
+   - Guards against prompt injections and strictly refuses user attempts to recalculate or override authoritative scores.
+   - Clearly distinguishes missing nutrients from low/zero values.
+   - Zero scan history writes.
+
+#### 2. Validation Results
+- **New Dedicated Phase 6 Test Suite**: `foodscanner-ai/tests/test_api_endpoints_refactored.py` — **24 passed, 0 failed**.
+- **Full Backend Test Suite**: `pytest foodscanner-ai/tests` — **638 passed, 3 skipped (Postgres-only migrations), 0 failed** in 89.62s.
+- **Full Mobile Test Suite**: `node --test foodscanner-mobile/tests/*.test.js` — **109 passed, 0 failed** in 259ms.
+- **Cross-Endpoint Benchmark Consistency**: Maggi, Parle-G, Amul Butter, Kurkure, and Coca-Cola verified identical across `/product`, `/analyze`, `/explain`, and `/scan`.
+
+### H. Known Limitations & Deferred Work
+- Mobile client UI updates to render confidence chips and assessment status badges are explicitly deferred to **Phase 7**.
+- Background enrichment script for existing incomplete products is deferred to **Phase 8**.
 
 ## 7. Database Schema Migration Plan (Alembic 004)
 
@@ -507,6 +584,7 @@ Phase 10: Production Deployment, Monitoring & ODbL Compliance
 | **Create** | `foodscanner-ai/tests/test_off_client.py` | Phase 3 | Unit tests for OFF client and rate limiter |
 | **Create** | `foodscanner-ai/tests/test_product_data_service.py` | Phase 4 | Unit tests for product data service and merge rules |
 | **Create** | `foodscanner-ai/tests/test_scoring_engine.py` | Phase 5 | Unit tests for scoring engine and assessability policies |
+| **Create** | `foodscanner-ai/tests/test_api_endpoints_refactored.py` | Phase 6 | Unit tests for refactored API endpoints and cross-endpoint consistency |
 | **Create** | `foodscanner-ai/tests/test_cross_endpoint_scoring_consistency.py` | Phase 9 | Cross-endpoint scoring consistency validation suite |
 | **Create** | `foodscanner-ai/tests/test_benchmark_products_regression.py` | Phase 9 | Benchmark regression suite (Maggi, Parle-G, Amul, Kurkure, Coke) |
 | **Modify** | `foodscanner-ai/database/models.py` | Phase 2 | Add provenance columns and `ProductBarcodeAlias` ORM model |
