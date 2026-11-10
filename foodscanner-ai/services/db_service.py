@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from rapidfuzz import fuzz
 
-from database.models import FoodLog, Nutrition, Product, ScanHistory, User
+from database.models import FoodLog, Nutrition, Product, ProductBarcodeAlias, ScanHistory, User
 
 
 def _utc_now_str() -> str:
@@ -29,12 +29,24 @@ def _local_day_bounds() -> tuple[str, str]:
 
 
 def get_product_by_barcode(db: Session, barcode: str) -> Optional[dict[str, Any]]:
+    barcode_str = str(barcode).strip()
     stmt = (
         select(Product, Nutrition)
         .outerjoin(Nutrition, Nutrition.product_id == Product.id)
-        .where(Product.barcode == str(barcode))
+        .where(Product.barcode == barcode_str)
     )
     row = db.execute(stmt).first()
+
+    # Fallback to barcode alias resolution if primary barcode is not matched
+    if row is None:
+        alias_stmt = (
+            select(Product, Nutrition)
+            .join(ProductBarcodeAlias, ProductBarcodeAlias.product_id == Product.id)
+            .outerjoin(Nutrition, Nutrition.product_id == Product.id)
+            .where(ProductBarcodeAlias.alias_barcode == barcode_str)
+        )
+        row = db.execute(alias_stmt).first()
+
     if row is None:
         return None
 
@@ -46,6 +58,8 @@ def get_product_by_barcode(db: Session, barcode: str) -> Optional[dict[str, Any]
         "barcode": product.barcode,
         "product_name": product.product_name,
         "brand": product.brand,
+        "category": getattr(product, "category", None),
+        "canonical_id": getattr(product, "canonical_id", None) or product.barcode,
         "nutriscore": product.nutriscore,
         "ingredients": product.ingredients,
         "additives": product.additives,
@@ -56,10 +70,93 @@ def get_product_by_barcode(db: Session, barcode: str) -> Optional[dict[str, Any]
         "trans_fat": nutrition.trans_fat if nutrition else None,
         "sugar": nutrition.sugar if nutrition else None,
         "salt": nutrition.salt if nutrition else None,
+        "sodium": getattr(nutrition, "sodium", None) if nutrition else None,
         "protein": nutrition.protein if nutrition else None,
         "fiber": nutrition.fiber if nutrition else None,
         "carbs": nutrition.carbs if nutrition else None,
     }
+
+
+def get_canonical_product_by_barcode(db: Session, barcode: str) -> Optional[Any]:
+    """Retrieve product by primary barcode or alias barcode and return CanonicalProduct contract."""
+    from database.canonical_adapter import db_product_to_canonical
+
+    barcode_str = str(barcode).strip()
+    product = db.execute(
+        select(Product)
+        .where(Product.barcode == barcode_str)
+    ).scalar_one_or_none()
+
+    if product is None:
+        product = db.execute(
+            select(Product)
+            .join(ProductBarcodeAlias, ProductBarcodeAlias.product_id == Product.id)
+            .where(ProductBarcodeAlias.alias_barcode == barcode_str)
+        ).scalar_one_or_none()
+
+    if product is None:
+        return None
+
+    return db_product_to_canonical(product)
+
+
+def add_barcode_alias(
+    db: Session,
+    product_id: int,
+    alias_barcode: str,
+    alias_type: str = "alternate",
+) -> ProductBarcodeAlias:
+    """Register an alternate barcode alias idempotently with validation guards.
+
+    Guards enforced:
+    1. Target product must exist in the database.
+    2. Alias barcode cannot be identical to target product's primary barcode (no self-alias).
+    3. Alias barcode cannot collide with any product's primary barcode (no primary shadowing).
+    4. If alias already belongs to the target product, returns existing alias idempotently.
+    5. If alias belongs to a different product, raises ValueError.
+    """
+    clean_alias = str(alias_barcode).strip()
+    if not clean_alias:
+        raise ValueError("Cannot add empty or whitespace-only barcode alias")
+
+    target_product = db.execute(
+        select(Product).where(Product.id == product_id)
+    ).scalar_one_or_none()
+    if target_product is None:
+        raise ValueError(f"Cannot add alias: target product with id {product_id} does not exist")
+
+    if clean_alias == target_product.barcode:
+        raise ValueError(
+            f"Cannot add alias '{clean_alias}': alias cannot be identical to target product's primary barcode"
+        )
+
+    existing_primary = db.execute(
+        select(Product).where(Product.barcode == clean_alias)
+    ).scalar_one_or_none()
+    if existing_primary is not None:
+        raise ValueError(
+            f"Cannot add alias '{clean_alias}': barcode already exists as primary barcode for product id {existing_primary.id}"
+        )
+
+    existing_alias = db.execute(
+        select(ProductBarcodeAlias).where(ProductBarcodeAlias.alias_barcode == clean_alias)
+    ).scalar_one_or_none()
+    if existing_alias is not None:
+        if existing_alias.product_id == product_id:
+            return existing_alias
+        raise ValueError(
+            f"Cannot add alias '{clean_alias}': alias already belongs to product id {existing_alias.product_id}"
+        )
+
+    alias = ProductBarcodeAlias(
+        product_id=product_id,
+        alias_barcode=clean_alias,
+        alias_type=alias_type,
+        created_at=_utc_now_str(),
+    )
+    db.add(alias)
+    db.flush()
+    return alias
 
 
 def create_product(db: Session, product_data: dict[str, Any]) -> Product:
@@ -71,23 +168,61 @@ def create_product(db: Session, product_data: dict[str, Any]) -> Product:
             existing.product_name = str(product_data.get("product_name"))
         if product_data.get("brand") is not None and not existing.brand:
             existing.brand = str(product_data.get("brand"))
+        if product_data.get("category") is not None and not existing.category:
+            existing.category = str(product_data.get("category"))
+        if product_data.get("canonical_id") is not None and not existing.canonical_id:
+            existing.canonical_id = str(product_data.get("canonical_id"))
         if product_data.get("nutriscore") is not None and not existing.nutriscore:
             existing.nutriscore = str(product_data.get("nutriscore"))
         if product_data.get("ingredients") is not None and not existing.ingredients:
             existing.ingredients = product_data.get("ingredients")
         if product_data.get("additives") is not None and not existing.additives:
             existing.additives = product_data.get("additives")
+        if product_data.get("data_source") is not None:
+            existing.data_source = str(product_data.get("data_source"))
+        if product_data.get("data_confidence") is not None:
+            existing.data_confidence = str(product_data.get("data_confidence"))
+        if "nutrition_completeness" in product_data:
+            val = product_data["nutrition_completeness"]
+            existing.nutrition_completeness = float(val) if val is not None else None
+        if "ingredients_completeness" in product_data:
+            val = product_data["ingredients_completeness"]
+            existing.ingredients_completeness = float(val) if val is not None else None
+        if product_data.get("last_fetched_at") is not None:
+            existing.last_fetched_at = str(product_data.get("last_fetched_at"))
+        if product_data.get("last_updated_at") is not None:
+            existing.last_updated_at = str(product_data.get("last_updated_at"))
+        if product_data.get("field_provenance_json") is not None:
+            existing.field_provenance_json = str(product_data.get("field_provenance_json"))
+
         db.add(existing)
         db.flush()
         return existing
 
     product = Product(
         barcode=barcode,
+        canonical_id=str(product_data.get("canonical_id") or barcode),
         product_name=str(product_data.get("product_name") or ""),
         brand=product_data.get("brand"),
+        category=product_data.get("category"),
         nutriscore=product_data.get("nutriscore"),
         ingredients=product_data.get("ingredients"),
         additives=product_data.get("additives"),
+        data_source=str(product_data.get("data_source") or "local_db"),
+        data_confidence=str(product_data.get("data_confidence") or "UNVERIFIED"),
+        nutrition_completeness=(
+            float(product_data["nutrition_completeness"])
+            if product_data.get("nutrition_completeness") is not None
+            else None
+        ),
+        ingredients_completeness=(
+            float(product_data["ingredients_completeness"])
+            if product_data.get("ingredients_completeness") is not None
+            else None
+        ),
+        last_fetched_at=product_data.get("last_fetched_at"),
+        last_updated_at=product_data.get("last_updated_at"),
+        field_provenance_json=product_data.get("field_provenance_json"),
         created_at=str(product_data.get("created_at") or _utc_now_str()),
     )
     db.add(product)
@@ -100,7 +235,7 @@ def create_nutrition(db: Session, nutrition_data: dict[str, Any]) -> Nutrition:
 
     existing = db.execute(select(Nutrition).where(Nutrition.product_id == product_id)).scalar_one_or_none()
     if existing is not None:
-        for key in ["calories", "fat", "saturated_fat", "trans_fat", "sugar", "salt", "protein", "fiber", "carbs"]:
+        for key in ["calories", "fat", "saturated_fat", "trans_fat", "sugar", "salt", "sodium", "protein", "fiber", "carbs"]:
             if key in nutrition_data:
                 setattr(existing, key, nutrition_data.get(key))
         db.add(existing)
@@ -115,6 +250,7 @@ def create_nutrition(db: Session, nutrition_data: dict[str, Any]) -> Nutrition:
         trans_fat=nutrition_data.get("trans_fat"),
         sugar=nutrition_data.get("sugar"),
         salt=nutrition_data.get("salt"),
+        sodium=nutrition_data.get("sodium"),
         protein=nutrition_data.get("protein"),
         fiber=nutrition_data.get("fiber"),
         carbs=nutrition_data.get("carbs"),

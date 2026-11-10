@@ -321,18 +321,20 @@ erDiagram
     products {
         int id PK
         varchar barcode UK
+        varchar canonical_id "INDEXED"
         varchar product_name
         varchar brand
         varchar category
         varchar nutriscore
         text ingredients
         text additives
-        varchar data_source "DEFAULT 'legacy_db'"
+        varchar data_source "DEFAULT 'local_db'"
         varchar data_confidence "DEFAULT 'UNVERIFIED'"
         float nutrition_completeness "DEFAULT 0.0"
         float ingredients_completeness "DEFAULT 0.0"
         timestamp last_fetched_at "NULLABLE"
         timestamp last_updated_at "NULLABLE"
+        text field_provenance_json "NULLABLE"
         timestamp created_at
     }
 
@@ -348,6 +350,7 @@ erDiagram
         float protein
         float fiber
         float salt
+        float sodium "NULLABLE"
     }
 
     product_barcode_aliases {
@@ -358,6 +361,77 @@ erDiagram
         timestamp created_at
     }
 ```
+
+### A. Final Database to Canonical Mapping
+The canonical contract `CanonicalProduct` ([`foodscanner-ai/schemas/product.py`](file:///Users/sandeshshinde/ml-scanner-project/foodscanner-ai/schemas/product.py)) is decoupled from persistence via [`database/canonical_adapter.py`](file:///Users/sandeshshinde/ml-scanner-project/foodscanner-ai/database/canonical_adapter.py):
+
+| Canonical Product Field | Database Table & Column | Mapping Rule / Behavior |
+| :--- | :--- | :--- |
+| `canonical_id` | `products.canonical_id` | Explicit string; falls back to `products.barcode` if unassigned |
+| `barcode` | `products.barcode` | Primary package barcode (unique) |
+| `alternate_barcodes` | `product_barcode_aliases.alias_barcode` | One-to-many relationship loaded as list of strings |
+| `product_name` | `products.product_name` | Direct string |
+| `brand` | `products.brand` | Direct string (nullable) |
+| `category` | `products.category` | Direct string (nullable) |
+| `nutriscore` | `products.nutriscore` | Grade string a-e (nullable) |
+| `ingredients` | `products.ingredients` | Plain text ingredients list (nullable) |
+| `additives` | `products.additives` | Extracted additives or tags (nullable) |
+| `primary_provenance` | `products.data_source` | Maps string to `DataProvenance` enum (fallback `LOCAL_DB`) |
+| `field_provenance` | `products.field_provenance_json` | JSON string parsed to `Dict[str, FieldProvenance]` |
+| `nutrition.calories` | `nutrition.calories` | Float kcal per 100g (nullable, never 0 for missing) |
+| `nutrition.fat` | `nutrition.fat` | Float grams per 100g (nullable) |
+| `nutrition.saturated_fat`| `nutrition.saturated_fat` | Float grams per 100g (nullable) |
+| `nutrition.trans_fat` | `nutrition.trans_fat` | Float grams per 100g (nullable) |
+| `nutrition.carbs` | `nutrition.carbs` | Float grams per 100g (nullable) |
+| `nutrition.sugar` | `nutrition.sugar` | Float grams per 100g (nullable) |
+| `nutrition.protein` | `nutrition.protein` | Float grams per 100g (nullable) |
+| `nutrition.fiber` | `nutrition.fiber` | Float grams per 100g (nullable) |
+| `nutrition.salt` | `nutrition.salt` | Float grams per 100g (nullable) |
+| `nutrition.sodium` | `nutrition.sodium` | Float grams per 100g (nullable, converts to salt via $\times 2.5$) |
+| `assessment_status` | *(Computed Property)* | Dynamically derived upon access via Phase 1 rules; not stored redundantly |
+| `overall_confidence` | `products.data_confidence` | Dynamically derived upon access; cached in column for SQL queries |
+| `nutrition_completeness`| `products.nutrition_completeness` | Dynamically derived upon access; cached in column for SQL queries |
+| `ingredients_completeness`| `products.ingredients_completeness` | Dynamically derived upon access; cached in column for SQL queries |
+
+### B. Migration Design (Alembic Revision 004)
+- **Revision Identifier**: `004_add_provenance_and_aliases`
+- **Down Revision**: `003_add_saturated_and_trans_fat`
+- **Additive Columns**:
+  - `products`: `category`, `canonical_id`, `data_source`, `data_confidence`, `nutrition_completeness`, `ingredients_completeness`, `last_fetched_at`, `last_updated_at`, `field_provenance_json`.
+  - `nutrition`: `sodium`.
+- **Relational Table**: `product_barcode_aliases` with foreign key `ON DELETE CASCADE` referencing `products.id`.
+- **Indexes**: `ix_products_canonical_id` on `products.canonical_id`, `ix_product_barcode_aliases_product_id` on `product_id`, and unique index `ix_product_barcode_aliases_barcode` on `alias_barcode`.
+
+### C. Idempotent Data Backfill
+The upgrade migration automatically and idempotently updates historical pre-existing records:
+1. `canonical_id`: Sets `canonical_id = barcode` for all rows where `canonical_id IS NULL`.
+2. `data_source`: Sets `data_source = 'local_db'` for historical records without explicit provenance.
+3. `data_confidence`: Sets `data_confidence = 'UNVERIFIED'` to prevent unverified legacy data from falsely claiming HIGH confidence.
+4. `nutrition_completeness` & `ingredients_completeness`: Backfills defaults (`0.0`) for any NULL rows.
+5. Preserves all existing IDs, foreign keys, relationships, and NULL disclosures.
+
+### D. PostgreSQL & SQLite Dialect Compatibility
+- **Alembic `batch_alter_table`**: Used for all column alterations and table re-definitions, ensuring seamless execution across SQLite (table-rebuilding strategy) and PostgreSQL (`ALTER TABLE ADD/DROP COLUMN`).
+- **PostgreSQL Connection Pooling**: Production connection pool configuration with `pool_pre_ping=True`, customizable pool sizes (`DB_POOL_SIZE`, `DB_MAX_OVERFLOW`), and recycling.
+- **SQLite Concurrency**: Local SQLite engines maintain `check_same_thread=False` and runtime PRAGMA foreign keys for integration tests.
+
+### E. Safe Migration & Rollback Commands
+- **Run Migrations Safely**:
+  ```bash
+  cd foodscanner-ai
+  alembic upgrade head
+  ```
+- **Safe Downgrade (Rollback)**:
+  ```bash
+  cd foodscanner-ai
+  alembic downgrade 003_add_saturated_and_trans_fat
+  ```
+  *(Downgrade drops the alias table and added columns without touching core product or nutrition rows).*
+
+### F. Deferred Scope (Handled in Subsequent Phases)
+- **Phase 3**: Open Food Facts API v3 client with rate-limiting and cache integration.
+- **Phase 4**: `ProductDataService` DB-first lookup and quality-aware merge rules.
+- **Phase 5**: Authoritative scoring engine integration with explicit `UNASSESSABLE` policy.
 
 ---
 

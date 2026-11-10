@@ -3,11 +3,20 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     barcode TEXT NOT NULL UNIQUE,
+    canonical_id TEXT,
     product_name TEXT NOT NULL,
     brand TEXT,
+    category TEXT,
     nutriscore TEXT,
     ingredients TEXT,
     additives TEXT,
+    data_source TEXT DEFAULT 'local_db',
+    data_confidence TEXT DEFAULT 'UNVERIFIED',
+    nutrition_completeness REAL,
+    ingredients_completeness REAL,
+    last_fetched_at TEXT,
+    last_updated_at TEXT,
+    field_provenance_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -20,9 +29,19 @@ CREATE TABLE IF NOT EXISTS nutrition (
     trans_fat REAL,
     sugar REAL,
     salt REAL,
+    sodium REAL,
     protein REAL,
     fiber REAL,
     carbs REAL,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS product_barcode_aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL,
+    alias_barcode TEXT NOT NULL UNIQUE,
+    alias_type TEXT DEFAULT 'alternate',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
 );
 

@@ -64,6 +64,24 @@ def run_migrations(engine: Engine) -> None:
                 p_cols = {c["name"] for c in inspector.get_columns("products")}
                 if "brand" not in p_cols:
                     conn.execute(text("ALTER TABLE products ADD COLUMN brand VARCHAR(255)"))
+                if "category" not in p_cols:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN category VARCHAR(255)"))
+                if "canonical_id" not in p_cols:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN canonical_id VARCHAR(64)"))
+                if "data_source" not in p_cols:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN data_source VARCHAR(50) DEFAULT 'local_db'"))
+                if "data_confidence" not in p_cols:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN data_confidence VARCHAR(20) DEFAULT 'UNVERIFIED'"))
+                if "nutrition_completeness" not in p_cols:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN nutrition_completeness FLOAT"))
+                if "ingredients_completeness" not in p_cols:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN ingredients_completeness FLOAT"))
+                if "last_fetched_at" not in p_cols:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN last_fetched_at VARCHAR(50)"))
+                if "last_updated_at" not in p_cols:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN last_updated_at VARCHAR(50)"))
+                if "field_provenance_json" not in p_cols:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN field_provenance_json TEXT"))
                 if "ingredients" not in p_cols:
                     conn.execute(text("ALTER TABLE products ADD COLUMN ingredients TEXT"))
                 if "additives" not in p_cols:
@@ -90,6 +108,27 @@ def run_migrations(engine: Engine) -> None:
                 for fat_col in ("saturated_fat", "trans_fat"):
                     if fat_col not in n_cols:
                         conn.execute(text(f"ALTER TABLE nutrition ADD COLUMN {fat_col} FLOAT"))
+                if "sodium" not in n_cols:
+                    conn.execute(text("ALTER TABLE nutrition ADD COLUMN sodium FLOAT"))
+
+            # Product barcode aliases migrations
+            if "product_barcode_aliases" not in table_names:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS product_barcode_aliases (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            product_id INTEGER NOT NULL,
+                            alias_barcode VARCHAR(64) NOT NULL UNIQUE,
+                            alias_type VARCHAR(50) DEFAULT 'alternate',
+                            created_at VARCHAR(50) NOT NULL,
+                            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+                        )
+                        """
+                    )
+                )
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_product_barcode_aliases_product_id ON product_barcode_aliases (product_id)"))
+                conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_product_barcode_aliases_barcode ON product_barcode_aliases (alias_barcode)"))
 
             # OCR jobs table migrations
             if "ocr_jobs" not in table_names:
@@ -267,9 +306,9 @@ def init_db(
                 f"Database is versioned by Alembic (current revision: {current_rev}). In-process auto-upgrade is disabled during startup "
                 "to prevent multi-worker concurrency. Ensure 'alembic upgrade head' is executed as a deployment step."
             )
-            if current_rev != "003_add_saturated_and_trans_fat":
+            if current_rev != "004_add_provenance_and_aliases":
                 logger.warning(
-                    f"DATABASE MIGRATION WARNING: Current database revision is '{current_rev}', which is behind head ('003_add_saturated_and_trans_fat'). "
+                    f"DATABASE MIGRATION WARNING: Current database revision is '{current_rev}', which is behind head ('004_add_provenance_and_aliases'). "
                     "Pending migrations have not been applied. Run 'alembic upgrade head' before serving production traffic."
                 )
     else:

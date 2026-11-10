@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from sqlalchemy import Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.orm import Base
+
+if TYPE_CHECKING:
+    from schemas.product import CanonicalProduct
 
 
 class User(Base):
@@ -31,14 +35,29 @@ class User(Base):
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (
+        Index("ix_products_canonical_id", "canonical_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     barcode: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     product_name: Mapped[str] = mapped_column(String, nullable=False)
     brand: Mapped[str | None] = mapped_column(String, nullable=True)
+    category: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    canonical_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     nutriscore: Mapped[str | None] = mapped_column(String, nullable=True)
     ingredients: Mapped[str | None] = mapped_column(Text, nullable=True)
     additives: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Provenance and completeness tracking
+    data_source: Mapped[str | None] = mapped_column(String(50), nullable=True, default="local_db")
+    data_confidence: Mapped[str | None] = mapped_column(String(20), nullable=True, default="UNVERIFIED")
+    nutrition_completeness: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    ingredients_completeness: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    last_fetched_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    last_updated_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    field_provenance_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[str] = mapped_column(String, nullable=False)
 
     nutrition: Mapped["Nutrition | None"] = relationship(
@@ -48,6 +67,16 @@ class Product(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    aliases: Mapped[list["ProductBarcodeAlias"]] = relationship(
+        "ProductBarcodeAlias",
+        back_populates="product",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    def to_canonical(self) -> CanonicalProduct:
+        from database.canonical_adapter import db_product_to_canonical
+        return db_product_to_canonical(self)
 
 
 class Nutrition(Base):
@@ -65,11 +94,28 @@ class Nutrition(Base):
     trans_fat: Mapped[float | None] = mapped_column(Float, nullable=True)
     sugar: Mapped[float | None] = mapped_column(Float, nullable=True)
     salt: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sodium: Mapped[float | None] = mapped_column(Float, nullable=True)
     protein: Mapped[float | None] = mapped_column(Float, nullable=True)
     fiber: Mapped[float | None] = mapped_column(Float, nullable=True)
     carbs: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     product: Mapped[Product] = relationship("Product", back_populates="nutrition")
+
+
+class ProductBarcodeAlias(Base):
+    __tablename__ = "product_barcode_aliases"
+    __table_args__ = (
+        Index("ix_product_barcode_aliases_product_id", "product_id"),
+        Index("ix_product_barcode_aliases_barcode", "alias_barcode", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    product_id: Mapped[int] = mapped_column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
+    alias_barcode: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    alias_type: Mapped[str | None] = mapped_column(String(50), nullable=True, default="alternate")
+    created_at: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    product: Mapped[Product] = relationship("Product", back_populates="aliases")
 
 
 class ScanHistory(Base):

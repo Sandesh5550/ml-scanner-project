@@ -44,6 +44,7 @@ def test_fresh_sqlite_database_upgraded_to_head(tmp_path):
         "scan_history",
         "daily_food_log",
         "ocr_jobs",
+        "product_barcode_aliases",
         "alembic_version",
     }
     assert expected_tables.issubset(tables)
@@ -51,6 +52,14 @@ def test_fresh_sqlite_database_upgraded_to_head(tmp_path):
     # Verify users.allergens exists
     user_cols = {c["name"] for c in inspector.get_columns("users")}
     assert "allergens" in user_cols
+
+    # Verify products Phase 2 columns
+    prod_cols = {c["name"] for c in inspector.get_columns("products")}
+    assert {"canonical_id", "category", "data_source", "data_confidence", "nutrition_completeness", "ingredients_completeness"}.issubset(prod_cols)
+
+    # Verify nutrition Phase 2 sodium column
+    nutr_cols = {c["name"] for c in inspector.get_columns("nutrition")}
+    assert "sodium" in nutr_cols
 
     # Verify ocr_jobs columns
     ocr_cols = {c["name"] for c in inspector.get_columns("ocr_jobs")}
@@ -70,7 +79,7 @@ def test_fresh_sqlite_database_upgraded_to_head(tmp_path):
     # Verify alembic_version revision ID
     with engine.connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "003_add_saturated_and_trans_fat"
+        assert rev == "004_add_provenance_and_aliases"
 
 
 def test_upgrade_from_001_preserves_user_data(tmp_path):
@@ -169,7 +178,7 @@ def test_preexisting_dev_schema_idempotency(tmp_path):
     assert "ocr_jobs" in set(inspector_after.get_table_names())
     with engine.connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "003_add_saturated_and_trans_fat"
+        assert rev == "004_add_provenance_and_aliases"
 
 
 def test_ocr_indexes_and_foreign_keys(tmp_path):
@@ -250,7 +259,7 @@ def test_multiworker_startup_skips_inprocess_upgrade(tmp_path):
     command.upgrade(cfg, "head")
     with engine.connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "003_add_saturated_and_trans_fat"
+        assert rev == "004_add_provenance_and_aliases"
 
 
 def test_unversioned_fallback_repairs_missing_indexes(tmp_path):
@@ -348,7 +357,7 @@ def test_unversioned_database_unsafe_upgrade_blocked_by_preflight(tmp_path):
 
     with engine.connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rev == "003_add_saturated_and_trans_fat"
+        assert rev == "004_add_provenance_and_aliases"
 
 
 def test_migration_002_rejects_incompatible_schema(tmp_path):
