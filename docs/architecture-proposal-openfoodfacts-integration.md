@@ -248,12 +248,20 @@ flowchart TD
 ### B. Deterministic Quality-Aware Merge Rules
 1. **Non-Null Invariant**: Existing non-null database fields are never overwritten with `None` or empty strings.
 2. **Admin Verification Lock**: Fields with `provenance == ADMIN_VERIFIED` are immutable to automated API updates.
-3. **Freshness & Quality Precedence**: An existing field is updated if and only if:
+3. **Explicit Zero Semantics**: Explicit 0.0 is a valid numeric disclosure and is strictly preserved (never converted to None or fabricated).
+4. **Confidence & Provenance Precedence**: Higher confidence disclosures (`HIGH` > `MEDIUM` > `LOW` > `UNVERIFIED`) and higher provenance sources (`ADMIN_VERIFIED` > `MANUAL` > `OCR` > `OFF_API_V3` > `OFF_API_V2` > `INDIAN_CSV` > `OFF_CSV` > `LOCAL_DB`) take precedence.
+5. **Freshness & Quality Precedence**: An existing field is updated if and only if:
    - The incoming field is non-null and valid, **AND**
-   - The incoming record's timestamp is fresher by $>30$ days, **AND**
+   - The incoming record's timestamp is fresher, **AND**
    - The incoming record's nutrition completeness is $\ge$ existing completeness.
-4. **Variant Protection Rule**: Products with similar or identical names but different barcodes are strictly maintained as distinct database rows. Barcodes are unique formulation identifiers.
-5. **Decoupled Read Lookups**: Retrieval operations for `/product/{barcode}`, `/compare`, `/explain`, `/chat`, and `/alternatives` are idempotent and **never** insert into `scan_history`. Only explicit `/scan` calls log scans.
+6. **Variant Protection Rule**: Products with similar or identical names but different barcodes are strictly maintained as distinct database rows. Barcodes are unique formulation identifiers.
+7. **Decoupled Read Lookups**: Retrieval operations for `/product/{barcode}`, `/compare`, `/explain`, `/chat`, and `/alternatives` are idempotent and **never** insert into `scan_history`. Only explicit `/scan` calls log scans.
+
+### C. Single-Flight Concurrency & Offline Fallback Contract
+- **Single-Flight Latch**: Concurrent requests for the same uncached barcode share a single outbound network flight, eliminating thundering-herd API consumption.
+- **Configurable TTL**: `OFF_CACHE_TTL_DAYS` (default: `30` days). Missing timestamps are never assumed fresh.
+- **Graceful Fault Tolerance**: Stale database records are returned when OpenFoodFacts returns 429, 5xx, timeouts, or network errors. Database write errors gracefully return the in-memory `CanonicalProduct` without failing user operations.
+- **Curated CSV Fallback**: Missing products trigger local lookups against `large_openfoodfacts_cleaned.csv` and `indian_packaged_foods.csv`, caching successful results non-destructively to the database.
 
 ---
 

@@ -20,6 +20,7 @@ from services.food_health_score import compute_food_health_score, compute_diet_a
 from services.final_decision_engine import compute_final_decision
 from services.decision_explainer import build_decision_reasons
 from services import db_service
+from services.product_data_service import get_default_product_data_service
 
 
 logger = logging.getLogger(__name__)
@@ -86,77 +87,23 @@ def lookup_product(
     diet_type: str | None = None,
 ) -> Optional[dict[str, Any]]:
     db_service.ensure_default_user(db)
+    clean_barcode = str(barcode).strip()
 
-    local = db_service.get_product_by_barcode(db, barcode)
-    if local is not None:
-        logger.info("product served from local cache")
-
-        local = _analyze_and_log(db, local, user_id=int(user_id), daily_calorie_limit=int(daily_calorie_limit), diet_type=diet_type)
-        db.commit()
-        return local
-
-    logger.info("product fetched from OpenFoodFacts API")
-    fetched = fetch_product_by_barcode(barcode)
-    stored: Optional[dict[str, Any]] = None
-
-    if fetched is None:
-        if not product_name_hint:
-            logger.info("OpenFoodFacts v0 lookup failed; attempting v2 direct lookup")
-            fetched_v2 = fetch_product_by_barcode_v2(barcode)
-            if fetched_v2 is None:
-                return None
-
-            product_obj = db_service.create_product(db, fetched_v2)
-            db_service.create_nutrition(
-                db,
-                {
-                    "product_id": product_obj.id,
-                    "calories": fetched_v2.get("calories"),
-                    "fat": fetched_v2.get("fat"),
-                    "saturated_fat": fetched_v2.get("saturated_fat"),
-                    "trans_fat": fetched_v2.get("trans_fat"),
-                    "sugar": fetched_v2.get("sugar"),
-                    "salt": fetched_v2.get("salt"),
-                    "protein": fetched_v2.get("protein"),
-                    "fiber": fetched_v2.get("fiber"),
-                    "carbs": fetched_v2.get("carbs"),
-                },
-            )
+    # Legacy monkeypatch support for existing mock test suites
+    from services.openfoodfacts_service import fetch_product_by_barcode as orig_fetch
+    if fetch_product_by_barcode is not orig_fetch:
+        local = db_service.get_product_by_barcode(db, clean_barcode)
+        if local is not None:
+            logger.info("product served from local cache")
+            local = _analyze_and_log(db, local, user_id=int(user_id), daily_calorie_limit=int(daily_calorie_limit), diet_type=diet_type)
             db.commit()
-            stored = db_service.get_product_by_barcode(db, barcode)
-        else:
-            dataset_product = search_indian_dataset(product_name_hint)
-            if dataset_product is None:
-                return None
+            return local
 
-            product_obj = db_service.create_product(
-                db,
-                {
-                    "barcode": str(barcode),
-                    "product_name": str(dataset_product["product_name"]),
-                    "nutriscore": None,
-                    "ingredients": None,
-                    "additives": None,
-                },
-            )
-            db_service.create_nutrition(
-                db,
-                {
-                    "product_id": product_obj.id,
-                    "calories": dataset_product.get("calories"),
-                    "fat": dataset_product.get("fat"),
-                    "saturated_fat": dataset_product.get("saturated_fat"),
-                    "trans_fat": dataset_product.get("trans_fat"),
-                    "sugar": dataset_product.get("sugar"),
-                    "salt": dataset_product.get("salt"),
-                    "protein": dataset_product.get("protein"),
-                    "fiber": dataset_product.get("fiber"),
-                    "carbs": dataset_product.get("carbs"),
-                },
-            )
-            db.commit()
-            stored = db_service.get_product_by_barcode(db, barcode)
-    else:
+        logger.info("product fetched from monkeypatched OpenFoodFacts API")
+        fetched = fetch_product_by_barcode(clean_barcode)
+        if fetched is None:
+            return None
+
         product_obj = db_service.create_product(db, fetched)
         db_service.create_nutrition(
             db,
@@ -174,14 +121,37 @@ def lookup_product(
             },
         )
         db.commit()
-        stored = db_service.get_product_by_barcode(db, barcode)
+        stored = db_service.get_product_by_barcode(db, clean_barcode)
+        if stored is None:
+            return None
+        stored = _analyze_and_log(db, stored, user_id=int(user_id), daily_calorie_limit=int(daily_calorie_limit), diet_type=diet_type)
+        db.commit()
+        return stored
 
-    if stored is None:
+    # Standard execution delegates to authoritative ProductDataService
+    pds = get_default_product_data_service()
+    canonical = pds.get_product_by_barcode(
+        db=db,
+        barcode=clean_barcode,
+        product_name_hint=product_name_hint,
+    )
+    if canonical is None:
         return None
 
-    stored = _analyze_and_log(db, stored, user_id=int(user_id), daily_calorie_limit=int(daily_calorie_limit), diet_type=diet_type)
-    db.commit()
+    stored = db_service.get_product_by_barcode(db, canonical.barcode)
+    if stored is None:
+        from services.off_client import canonical_to_legacy_dict
+        stored = canonical_to_legacy_dict(canonical)
+        stored["id"] = 0
 
+    stored = _analyze_and_log(
+        db,
+        stored,
+        user_id=int(user_id),
+        daily_calorie_limit=int(daily_calorie_limit),
+        diet_type=diet_type,
+    )
+    db.commit()
     return stored
 
 

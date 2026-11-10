@@ -208,25 +208,292 @@ def canonical_to_db_models(
     return product, nutrition, aliases
 
 
+CONFIDENCE_RANK: Dict[DataConfidence, int] = {
+    DataConfidence.HIGH: 4,
+    DataConfidence.MEDIUM: 3,
+    DataConfidence.LOW: 2,
+    DataConfidence.UNVERIFIED: 1,
+}
+
+PROVENANCE_RANK: Dict[DataProvenance, int] = {
+    DataProvenance.ADMIN_VERIFIED: 10,
+    DataProvenance.MANUAL: 8,
+    DataProvenance.OCR: 6,
+    DataProvenance.OFF_API_V3: 5,
+    DataProvenance.OFF_API_V2: 4,
+    DataProvenance.INDIAN_CSV: 3,
+    DataProvenance.OFF_CSV: 2,
+    DataProvenance.LOCAL_DB: 1,
+}
+
+
+def _resolve_field(
+    field_name: str,
+    val_existing: Any,
+    val_incoming: Any,
+    prov_existing: Optional[FieldProvenance],
+    prov_incoming: Optional[FieldProvenance],
+    ts_existing: Optional[datetime],
+    ts_incoming: Optional[datetime],
+    existing_completeness: float,
+    incoming_completeness: float,
+    is_text: bool = False,
+) -> Tuple[Any, Optional[FieldProvenance]]:
+    """Deterministically resolve a single field between existing and incoming records.
+
+    Rules strictly enforced:
+    1. Non-Null Invariant: Existing non-null fields are never overwritten with None or empty text.
+    2. Admin Verification Lock: Fields with provenance == ADMIN_VERIFIED are immutable to automated external updates.
+    3. Missing Existing Value: If existing field is None or empty and incoming is present, incoming is adopted.
+    4. Explicit Zero Semantics: Explicit 0.0 is a valid numeric disclosure and is preserved.
+    5. Quality & Confidence Precedence: Higher confidence rank strictly wins over lower confidence rank.
+    6. Provenance Precedence: When confidences are equal, higher provenance rank wins.
+    7. Freshness & Completeness: When confidence and provenance are equal, fresher timestamp wins
+       provided incoming completeness is >= existing completeness.
+    """
+    present_e = val_existing is not None and (not is_text or str(val_existing).strip() != "")
+    present_i = val_incoming is not None and (not is_text or str(val_incoming).strip() != "")
+
+    # Case 1: Neither present
+    if not present_e and not present_i:
+        return None, None
+
+    # Case 2: Only existing present -> preserve existing
+    if present_e and not present_i:
+        return val_existing, prov_existing
+
+    # Case 3: Only incoming present -> adopt incoming
+    if not present_e and present_i:
+        return val_incoming, prov_incoming
+
+    # Case 4: Both present -> Conflict resolution
+    # 4A. ADMIN_VERIFIED Protection
+    is_admin_e = prov_existing is not None and prov_existing.source == DataProvenance.ADMIN_VERIFIED
+    is_admin_i = prov_incoming is not None and prov_incoming.source == DataProvenance.ADMIN_VERIFIED
+
+    if is_admin_e and not is_admin_i:
+        return val_existing, prov_existing
+    if is_admin_i and not is_admin_e:
+        return val_incoming, prov_incoming
+
+    # 4B. Confidence Comparison
+    conf_e = prov_existing.confidence if prov_existing else DataConfidence.UNVERIFIED
+    conf_i = prov_incoming.confidence if prov_incoming else DataConfidence.UNVERIFIED
+    c_diff = CONFIDENCE_RANK.get(conf_i, 1) - CONFIDENCE_RANK.get(conf_e, 1)
+    if c_diff > 0:
+        return val_incoming, prov_incoming
+    if c_diff < 0:
+        return val_existing, prov_existing
+
+    # 4C. Provenance Ranking (Confidences are equal)
+    source_e = prov_existing.source if prov_existing else DataProvenance.LOCAL_DB
+    source_i = prov_incoming.source if prov_incoming else DataProvenance.LOCAL_DB
+    p_diff = PROVENANCE_RANK.get(source_i, 1) - PROVENANCE_RANK.get(source_e, 1)
+    if p_diff > 0:
+        return val_incoming, prov_incoming
+    if p_diff < 0:
+        return val_existing, prov_existing
+
+    # 4D. Freshness and Completeness (Confidence and Provenance are equal)
+    if ts_incoming and ts_existing and ts_incoming > ts_existing and incoming_completeness >= existing_completeness:
+        return val_incoming, prov_incoming
+
+    return val_existing, prov_existing
+
+
+def merge_canonical_products(
+    existing: CanonicalProduct,
+    incoming: CanonicalProduct,
+) -> CanonicalProduct:
+    """Deterministically merge an incoming CanonicalProduct into an existing CanonicalProduct.
+
+    Invariants enforced:
+    - Identity integrity: Refuses to merge products with mismatched barcodes/identities.
+    - Preserves higher-quality and ADMIN_VERIFIED disclosures.
+    - Missing disclosures remain None (never converted to 0.0).
+    - Explicit declared zero values remain preserved.
+    - Idempotent and conflict-deterministic.
+    """
+    # 1. Identity Guard
+    same_barcode = existing.barcode == incoming.barcode
+    is_alias = (
+        incoming.barcode in existing.alternate_barcodes
+        or existing.barcode in incoming.alternate_barcodes
+    )
+    same_canonical_id = (
+        existing.canonical_id
+        and incoming.canonical_id
+        and existing.canonical_id == incoming.canonical_id
+    )
+
+    if not (same_barcode or is_alias or same_canonical_id):
+        raise ValueError(
+            f"Cannot merge products with different identities: "
+            f"existing barcode='{existing.barcode}' (id='{existing.canonical_id}'), "
+            f"incoming barcode='{incoming.barcode}' (id='{incoming.canonical_id}'). "
+            f"Barcodes are unique formulation identifiers."
+        )
+
+    now_dt = datetime.now(timezone.utc)
+    ts_e = existing.last_fetched_at or existing.last_updated_at
+    ts_i = incoming.last_fetched_at or incoming.last_updated_at
+    comp_e = existing.nutrition_completeness
+    comp_i = incoming.nutrition_completeness
+
+    merged_prov: Dict[str, FieldProvenance] = {}
+
+    def get_prov(prod: CanonicalProduct, fname: str) -> Optional[FieldProvenance]:
+        if fname in prod.field_provenance:
+            return prod.field_provenance[fname]
+        ts = prod.last_fetched_at or prod.last_updated_at
+        return FieldProvenance(
+            source=prod.primary_provenance,
+            confidence=prod.overall_confidence,
+            timestamp=ts,
+        )
+
+    # 2. Metadata Fields Resolution
+    meta_fields = [
+        ("product_name", True),
+        ("brand", True),
+        ("category", True),
+        ("variant_name", True),
+        ("serving_size", True),
+        ("ingredients", True),
+        ("additives", True),
+        ("nutriscore", True),
+    ]
+
+    resolved_meta: Dict[str, Any] = {}
+    for fname, is_txt in meta_fields:
+        val_e = getattr(existing, fname, None)
+        val_i = getattr(incoming, fname, None)
+        p_e = get_prov(existing, fname) if val_e is not None else None
+        p_i = get_prov(incoming, fname) if val_i is not None else None
+
+        val_res, prov_res = _resolve_field(
+            field_name=fname,
+            val_existing=val_e,
+            val_incoming=val_i,
+            prov_existing=p_e,
+            prov_incoming=p_i,
+            ts_existing=ts_e,
+            ts_incoming=ts_i,
+            existing_completeness=comp_e,
+            incoming_completeness=comp_i,
+            is_text=is_txt,
+        )
+        resolved_meta[fname] = val_res
+        if prov_res is not None:
+            merged_prov[fname] = prov_res
+
+    # Special handling for product_name: non-empty name is required by schema
+    if not resolved_meta.get("product_name"):
+        resolved_meta["product_name"] = existing.product_name or incoming.product_name
+
+    # 3. Nutrition Fields Resolution
+    nutr_fields = [
+        "calories",
+        "fat",
+        "saturated_fat",
+        "trans_fat",
+        "carbs",
+        "sugar",
+        "protein",
+        "fiber",
+        "salt",
+        "sodium",
+    ]
+
+    resolved_nutr: Dict[str, Any] = {}
+    for nfield in nutr_fields:
+        val_e = getattr(existing.nutrition, nfield, None)
+        val_i = getattr(incoming.nutrition, nfield, None)
+        p_e = get_prov(existing, nfield) if val_e is not None else None
+        p_i = get_prov(incoming, nfield) if val_i is not None else None
+
+        val_res, prov_res = _resolve_field(
+            field_name=nfield,
+            val_existing=val_e,
+            val_incoming=val_i,
+            prov_existing=p_e,
+            prov_incoming=p_i,
+            ts_existing=ts_e,
+            ts_incoming=ts_i,
+            existing_completeness=comp_e,
+            incoming_completeness=comp_i,
+            is_text=False,
+        )
+        resolved_nutr[nfield] = val_res
+        if prov_res is not None:
+            merged_prov[nfield] = prov_res
+
+    # 4. Aliases / Alternate Barcodes
+    all_aliases = set(existing.alternate_barcodes) | set(incoming.alternate_barcodes)
+    # Never alias the primary barcode
+    all_aliases.discard(existing.barcode)
+    all_aliases.discard(incoming.barcode)
+    # If incoming barcode differs from existing primary barcode, add it as alias
+    if incoming.barcode != existing.barcode:
+        all_aliases.add(incoming.barcode)
+    merged_aliases = sorted(list(filter(None, all_aliases)))
+
+    # 5. Timestamps & Primary Provenance
+    timestamps = [t for t in [existing.last_fetched_at, incoming.last_fetched_at] if t is not None]
+    max_last_fetched = max(timestamps) if timestamps else None
+
+    # If any field has ADMIN_VERIFIED provenance, product primary provenance preserves ADMIN_VERIFIED
+    has_admin = any(p.source == DataProvenance.ADMIN_VERIFIED for p in merged_prov.values())
+    if has_admin or existing.primary_provenance == DataProvenance.ADMIN_VERIFIED:
+        final_provenance = DataProvenance.ADMIN_VERIFIED
+    elif incoming.last_fetched_at and (not existing.last_fetched_at or incoming.last_fetched_at >= existing.last_fetched_at):
+        final_provenance = incoming.primary_provenance
+    else:
+        final_provenance = existing.primary_provenance
+
+    # Nutriscore prediction flag
+    is_pred = existing.is_nutriscore_predicted and incoming.is_nutriscore_predicted
+
+    return CanonicalProduct(
+        canonical_id=existing.canonical_id or incoming.canonical_id or str(existing.barcode),
+        barcode=str(existing.barcode),
+        alternate_barcodes=merged_aliases,
+        product_name=str(resolved_meta["product_name"]),
+        brand=resolved_meta.get("brand"),
+        category=resolved_meta.get("category"),
+        variant_name=resolved_meta.get("variant_name"),
+        serving_size=resolved_meta.get("serving_size"),
+        nutrition=Nutrition100g(**resolved_nutr),
+        ingredients=resolved_meta.get("ingredients"),
+        additives=resolved_meta.get("additives"),
+        nutriscore=resolved_meta.get("nutriscore"),
+        is_nutriscore_predicted=is_pred,
+        primary_provenance=final_provenance,
+        field_provenance=merged_prov,
+        last_fetched_at=max_last_fetched,
+        last_updated_at=now_dt,
+    )
+
+
 def apply_canonical_to_db_product(
     canonical: CanonicalProduct,
     product: Product,
     nutrition: Optional[Nutrition] = None,
 ) -> None:
-    """Non-destructively apply a CanonicalProduct's attributes onto an existing DB Product & Nutrition entity."""
-    if canonical.product_name and not product.product_name:
+    """Apply a CanonicalProduct's attributes onto an existing DB Product & Nutrition entity."""
+    if canonical.product_name:
         product.product_name = canonical.product_name
-    if canonical.brand and not product.brand:
+    if canonical.brand is not None:
         product.brand = canonical.brand
-    if canonical.category:
+    if canonical.category is not None:
         product.category = canonical.category
-    if canonical.canonical_id and not product.canonical_id:
+    if canonical.canonical_id:
         product.canonical_id = canonical.canonical_id
-    if canonical.nutriscore and not product.nutriscore:
+    if canonical.nutriscore is not None:
         product.nutriscore = canonical.nutriscore
-    if canonical.ingredients and not product.ingredients:
+    if canonical.ingredients is not None:
         product.ingredients = canonical.ingredients
-    if canonical.additives and not product.additives:
+    if canonical.additives is not None:
         product.additives = canonical.additives
 
     product.data_source = canonical.primary_provenance.value
@@ -245,6 +512,4 @@ def apply_canonical_to_db_product(
     if target_nutrition is not None:
         n = canonical.nutrition
         for attr in ["calories", "fat", "saturated_fat", "trans_fat", "carbs", "sugar", "protein", "fiber", "salt", "sodium"]:
-            val = getattr(n, attr, None)
-            if val is not None:
-                setattr(target_nutrition, attr, val)
+            setattr(target_nutrition, attr, getattr(n, attr, None))

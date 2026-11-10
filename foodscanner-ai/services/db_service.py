@@ -100,6 +100,95 @@ def get_canonical_product_by_barcode(db: Session, barcode: str) -> Optional[Any]
     return db_product_to_canonical(product)
 
 
+def upsert_canonical_product(db: Session, canonical: Any) -> Any:
+    """Persist a CanonicalProduct using deterministic quality-aware merging.
+
+    Workflow:
+    1. Look up existing product by primary barcode or alias.
+    2. If found:
+       - Merges existing product data with incoming data via merge_canonical_products.
+       - Applies merged attributes onto the DB Product and Nutrition models.
+       - Adds any new alternate barcodes as aliases.
+       - Flushes changes.
+       - Returns the merged CanonicalProduct.
+    3. If not found:
+       - Converts canonical product to new DB models (Product, Nutrition, Aliases).
+       - Adds to session, flushes, and returns the persisted CanonicalProduct.
+       - Handles concurrent insert races via IntegrityError rollback and update retry.
+    """
+    from database.canonical_adapter import (
+        apply_canonical_to_db_product,
+        canonical_to_db_models,
+        db_product_to_canonical,
+        merge_canonical_products,
+    )
+    from schemas.product import CanonicalProduct
+    from sqlalchemy.exc import IntegrityError
+
+    if not isinstance(canonical, CanonicalProduct):
+        raise TypeError(f"Expected CanonicalProduct instance, got {type(canonical)}")
+
+    clean_barcode = str(canonical.barcode).strip()
+
+    # 1. Lookup existing product
+    existing_product = db.execute(
+        select(Product).where(Product.barcode == clean_barcode)
+    ).scalar_one_or_none()
+
+    if existing_product is None:
+        existing_product = db.execute(
+            select(Product)
+            .join(ProductBarcodeAlias, ProductBarcodeAlias.product_id == Product.id)
+            .where(ProductBarcodeAlias.alias_barcode == clean_barcode)
+        ).scalar_one_or_none()
+
+    # 2. Existing Product -> Quality-Aware Merge
+    if existing_product is not None:
+        existing_canonical = db_product_to_canonical(existing_product)
+        merged_canonical = merge_canonical_products(existing_canonical, canonical)
+        apply_canonical_to_db_product(merged_canonical, existing_product)
+
+        # Synchronize any new alternate barcodes
+        for alt_code in merged_canonical.alternate_barcodes:
+            if alt_code and alt_code != existing_product.barcode:
+                try:
+                    add_barcode_alias(db, existing_product.id, alt_code)
+                except ValueError:
+                    pass
+
+        db.flush()
+        return merged_canonical
+
+    # 3. New Product -> Insert
+    product_model, nutrition_model, alias_models = canonical_to_db_models(canonical)
+    try:
+        db.add(product_model)
+        db.flush()
+
+        nutrition_model.product_id = product_model.id
+        db.add(nutrition_model)
+
+        for alias in alias_models:
+            alias.product_id = product_model.id
+            db.add(alias)
+
+        db.flush()
+        return db_product_to_canonical(product_model, nutrition=nutrition_model, aliases=alias_models)
+    except IntegrityError:
+        # Concurrent insert race condition: another thread/worker just inserted this barcode
+        db.rollback()
+        retry_product = db.execute(
+            select(Product).where(Product.barcode == clean_barcode)
+        ).scalar_one_or_none()
+        if retry_product is not None:
+            existing_canonical = db_product_to_canonical(retry_product)
+            merged_canonical = merge_canonical_products(existing_canonical, canonical)
+            apply_canonical_to_db_product(merged_canonical, retry_product)
+            db.flush()
+            return merged_canonical
+        raise
+
+
 def add_barcode_alias(
     db: Session,
     product_id: int,
