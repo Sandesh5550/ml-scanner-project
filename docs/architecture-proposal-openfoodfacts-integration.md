@@ -1,9 +1,9 @@
 # PRAMAAN — Architecture & Implementation Master Plan
 **Open Food Facts API Integration, Authoritative Scoring Engine & Cross-Stack Alignment**
 
-**Document Version:** 2.1 (Reviewed & Finalized Production Roadmap)  
-**Status:** Approved for Phased Execution  
-**Target Repository:** `ml-scanner-project`  
+**Document Version:** 2.1 (Reviewed & Finalized Production Roadmap)
+**Status:** Approved for Phased Execution
+**Target Repository:** `ml-scanner-project`
 
 ---
 
@@ -62,14 +62,14 @@ flowchart TD
     end
 
     ClientLayer ==> ApiLayer
-    
+
     R_Scan --> PDS
     R_Prod --> PDS
     R_Search --> PDS
     R_Comp --> PDS
     R_Expl --> PDS
     R_Chat --> PDS
-    
+
     PDS --> DB
     PDS --> Coord
     PDS --> CSV_IND
@@ -77,7 +77,7 @@ flowchart TD
     PDS --> OFF_C
     OFF_C --> Coord
     OFF_C --> OFF_NET
-    
+
     R_Scan ==> USE
     R_Prod ==> USE
     R_Analyze ==> USE
@@ -157,17 +157,17 @@ class CanonicalProduct(BaseModel):
     additives: Optional[str] = None
     nutriscore: Optional[str] = None
     is_nutriscore_predicted: bool = False
-    
+
     # Granular Quality & Completeness (Strictly Derived, No Synthetic Defaults)
     nutrition_completeness: float = Field(0.0, ge=0.0, le=1.0)
     ingredients_completeness: float = Field(0.0, ge=0.0, le=1.0)
     assessment_status: AssessmentStatus = AssessmentStatus.UNVERIFIED
     overall_confidence: DataConfidence = DataConfidence.UNVERIFIED
-    
+
     # Provenance Tracking
     primary_provenance: DataProvenance = DataProvenance.LOCAL_DB
     field_provenance: Dict[str, FieldProvenance] = Field(default_factory=dict)
-    
+
     # Optional Timestamps
     last_fetched_at: Optional[datetime] = None
     last_updated_at: Optional[datetime] = None
@@ -201,9 +201,23 @@ USER_AGENT = os.environ.get("OFF_USER_AGENT", "Pramaan-FoodScanner/1.0")
 
 ### C. Timeouts, Backoff & Error Protocols
 - Connect timeout: `2.0s`. Read timeout: `4.0s`. Total timeout budget: `6.0s`.
-- On HTTP `404`: Fast-fail immediately (0 retries).
+- On HTTP `404`: Fast-fail immediately (0 retries, no v2 fallback).
 - On HTTP `429`: Parse `Retry-After` header (minimum 60s cooldown); all outbound calls instantly short-circuit to local DB/CSV during the cooldown.
 - On HTTP `5xx` / Timeout: Retry up to 2 times with jittered backoff ($0.5s \times 2^{\text{attempt}} + \text{jitter}$), provided rate limit tokens can be acquired.
+- Every retry and fallback attempt consumes a rate limit token from the endpoint budget.
+
+### D. In-Memory LRU Cache & Offline Fallback Contract
+- **Bounded LRU Cache**: Successful lookups are cached in-memory (`max_size=1000`, `default_ttl=3600s`).
+- **Defensive Copying**: Immutability is enforced via deep defensive copying on storage and retrieval, preventing cache corruption by callers.
+- **Strict Error Exclusion**: Failed responses (404, 5xx, timeouts, 429, malformed payloads) are never cached.
+- **Cache-Key Isolation**: Barcode lookups (`product:{barcode}`) and searches (`search:{query}:{limit}`) maintain distinct namespaces.
+- **Offline Fallback Contract**: The client distinguishes `SUCCESS`, `NOT_FOUND`, `INVALID_BARCODE`, `RATE_LIMITED`, `NETWORK_UNAVAILABLE`, `SERVER_ERROR`, and `MALFORMED_RESPONSE`. When OpenFoodFacts is unavailable or rate-limited, controlled fallback results enable existing application workflows to seamlessly query local DB and curated CSV datasets.
+
+### E. Environment Configuration Variables
+- `OFF_USER_AGENT`: Configurable HTTP User-Agent header (defaults to `Pramaan-FoodScanner/1.0`).
+- `WEB_CONCURRENCY`: Process worker count used for process-local rate limit allocation (defaults to `2`).
+- `RENDER_INSTANCE_COUNT`: Replica instance count used for process-local allocation (defaults to `1`).
+- `REDIS_URL`: Connection string for shared multi-worker Redis rate limiter (optional; falls back to process-local allocation when absent).
 
 ---
 
@@ -214,17 +228,17 @@ USER_AGENT = os.environ.get("OFF_USER_AGENT", "Pramaan-FoodScanner/1.0")
 flowchart TD
     Start["Incoming Barcode Request"] --> Step1["1. Query Primary Database"]
     Step1 --> CheckDB{"Found in DB?"}
-    
+
     CheckDB -- Yes --> CheckQuality{"Is Fresh (<30d) AND<br/>Confidence in HIGH/MEDIUM?"}
     CheckQuality -- Yes --> ReturnDB["Return CanonicalProduct (LOCAL_DB)"]
     CheckQuality -- No --> FetchOFF["2. Fetch from Open Food Facts API v3"]
-    
+
     CheckDB -- No --> FetchOFF
     FetchOFF --> CheckOFF{"API Success & Valid Data?"}
-    
+
     CheckOFF -- Yes --> SafeUpsert["3. Non-Destructive Quality-Aware Upsert"]
     SafeUpsert --> ReturnOFF["Return CanonicalProduct (OFF_API_V3)"]
-    
+
     CheckOFF -- No --> CheckCSV["4. Query Curated CSVs (Indian Foods / Cleaned OFF)"]
     CheckCSV -- Yes --> SafeCacheCSV["Non-Destructive Cache of CSV Data to DB"]
     SafeCacheCSV --> ReturnCSV["Return CanonicalProduct (CSV)"]
