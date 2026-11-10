@@ -23,9 +23,14 @@ def test_to_float(raw, expected):
 
 
 def test_score_is_clamped_between_0_and_100():
-    for product in (HEALTHY, JUNK, {}):
+    for product in (HEALTHY, JUNK):
         score = compute_food_health_score(product)["health_score"]
         assert 0 <= score <= 100
+
+    # Under Phase 5 policy, empty product disclosures are UNASSESSABLE (null score, INSUFFICIENT_DATA)
+    empty_res = compute_food_health_score({})
+    assert empty_res["health_score"] is None
+    assert empty_res["decision"] == "INSUFFICIENT_DATA"
 
 
 def test_healthy_product_scores_higher_than_junk():
@@ -45,6 +50,8 @@ def test_reason_lists_main_risk_factors():
 def test_missing_values_do_not_crash():
     result = compute_food_health_score({"sugar": None, "salt": ""})
     assert set(result) == {"health_score", "decision", "reason"}
+    assert result["health_score"] is None
+    assert result["decision"] == "INSUFFICIENT_DATA"
 
 
 def test_diet_aware_without_diet_returns_base_score():
