@@ -456,6 +456,17 @@ export default function ProfileScreen({ navigation }) {
             </Text>
           </TouchableOpacity>
         </View>
+
+        {/* Open Food Facts ODbL Attribution Notice */}
+        <View style={styles.odblCard}>
+          <Ionicons name="information-circle-outline" size={16} color={PREMIUM_COLORS.secondary} style={{ marginTop: 2, marginRight: 8 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.odblTitle}>Open Database License (ODbL 1.0)</Text>
+            <Text style={styles.odblText}>
+              Product data sourced from Open Food Facts (https://openfoodfacts.org), made available under the Open Database License (ODbL) v1.0.
+            </Text>
+          </View>
+        </View>
       </ScrollView>
     </View>
   );
@@ -727,5 +738,26 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: PREMIUM_COLORS.status.avoid,
+  },
+  odblCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: PREMIUM_COLORS.card,
+    borderRadius: PREMIUM_RADIUS.lg,
+    padding: 14,
+    marginTop: 18,
+    borderWidth: 1,
+    borderColor: PREMIUM_COLORS.border,
+  },
+  odblTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: PREMIUM_COLORS.ink,
+    marginBottom: 2,
+  },
+  odblText: {
+    fontSize: 11,
+    lineHeight: 15,
+    color: PREMIUM_COLORS.secondary,
   },
 });

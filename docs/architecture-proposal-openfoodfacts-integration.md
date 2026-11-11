@@ -402,9 +402,67 @@ All eight backend endpoints have been refactored according to strict architectur
 - **Full Mobile Test Suite**: `node --test foodscanner-mobile/tests/*.test.js` — **109 passed, 0 failed** in 259ms.
 - **Cross-Endpoint Benchmark Consistency**: Maggi, Parle-G, Amul Butter, Kurkure, and Coca-Cola verified identical across `/product`, `/analyze`, `/explain`, and `/scan`.
 
-### H. Known Limitations & Deferred Work
-- Mobile client UI updates to render confidence chips and assessment status badges are explicitly deferred to **Phase 7**.
+### H. Phase 7 — Complete Mobile UI/UX Alignment
+
+Phase 7 aligns the React Native Expo mobile application with the backend's assessment metadata, assessability policies, and confidence tiers, eliminating fabricated scores and communicating nutritional limitations transparently.
+
+#### 1. Mobile Assessment Status Architecture
+The mobile application dynamically normalizes backend assessment metadata through `foodscanner-mobile/src/utils/assessment.js` and renders tailored presentations:
+
+1. **`COMPLETE` (or `ASSESSABLE`)**:
+   - Renders animated `ScoreRing` displaying authoritative 0–100 numeric health score.
+   - Displays statutory final decision badge (`SAFE`, `MODERATE`, `AVOID`).
+   - Renders compact `ConfidenceBadge` indicating data reliability tier.
+   - Preserves complete-product UI and serving size scaling.
+
+2. **`PARTIAL` (or `PARTIALLY_ASSESSABLE`)**:
+   - Strictly suppresses single numeric health scores and score rings.
+   - Displays `ScoreRangeCard` with validated bounded range (e.g. `Estimated score range: 35–65`).
+   - Bounds validation enforces finite numbers, `[0, 100]` limits, and invariant `min_score <= max_score`.
+   - Never recalculates ranges or treats the upper bound as an actual score or safety certification.
+   - Only displays an `AVOID` decision if worst-case penalties or independent avoidance rules mandate avoidance; strictly refuses to display `SAFE` or `MODERATE`.
+   - Discloses missing statutory nutrients via `MissingNutrientsCard`.
+
+3. **`UNASSESSABLE`**:
+   - Strictly suppresses numeric scores, score rings, and fake placeholders (0 or 50).
+   - Strictly suppresses `SAFE` and `MODERATE` decision badges.
+   - Renders dedicated `UnassessableCard` explaining that insufficient disclosures prevent reliable assessment.
+   - Transparently renders available product facts without pretending an assessment exists.
+
+4. **`UNKNOWN`**:
+   - Resilient fallback that gracefully renders without throwing or fabricating scores.
+
+#### 2. Confidence Indicators & Semantic Invariants
+- Integrates four canonical backend tiers (`HIGH`, `MEDIUM`, `LOW`, `UNVERIFIED`) with human-friendly descriptions:
+  - `HIGH`: *"High confidence in available product information."*
+  - `MEDIUM`: *"Some information may be incomplete."*
+  - `LOW`: *"Limited information is available."*
+  - `UNVERIFIED`: *"Product information has not been sufficiently verified."*
+- **Strict Decoupling Invariant**: Data confidence is decoupled from product healthiness. A product with 100% verified complete data can receive an `AVOID` decision with `HIGH` confidence.
+- Graceful null/missing handling: Missing confidence metadata is handled without UI disruption.
+
+#### 3. Nutrition Disclosures & Explicit Zero Preservation
+- Strictly distinguishes explicit numeric zero (`0`) from `null`, `undefined`, or undeclared fields.
+- Zero values (`0g` sugar, `0 kcal`) render cleanly as valid disclosures.
+- Missing values render as `"Not disclosed"` with neutral empty track bars, avoiding misleading 0% visualizations.
+- `MissingNutrientsCard` identifies missing statutory mandatory dimensions under FSSAI standards (`calories`, `sugar`, `fat`, `salt/sodium`).
+
+#### 4. Null Health Score & Invariant Safeguards
+- `ResultScreen`, `ScoreRing`, `HomeScreen` (recent scans), and `ManualEntryScreen` eliminate all instances where `null` health scores were silently coerced to `0` or `72`.
+- `getProduct(barcode)` added to `foodscanner-mobile/src/services/api.js` for pure read queries to `GET /product/{barcode}` with zero scan history writes.
+- Mandatory Open Food Facts ODbL v1.0 attribution notices added to `HomeScreen` and `ProfileScreen`.
+
+#### 5. Verification Results
+- **New Dedicated Phase 7 Test Suite**: `foodscanner-mobile/tests/phase7_assessment_alignment.test.js` — **16 passed, 0 failed**.
+- **Full Mobile Test Suite**: `node --test foodscanner-mobile/tests/*.test.js` — **125 passed, 0 failed** in 233ms.
+- **Expo Linter**: `npm run lint` — **Clean, 0 errors**.
+- **TypeScript Type Check**: `npx tsc --noEmit` — **Clean, 0 errors**.
+- **Backend Test Suite Parity**: `pytest foodscanner-ai/tests` — **638 passed, 3 skipped, 0 failed** in 94.88s.
+
+### I. Known Limitations & Deferred Work
 - Background enrichment script for existing incomplete products is deferred to **Phase 8**.
+- Cross-endpoint consistency and benchmark regression suite is deferred to **Phase 9**.
+- Prometheus monitoring metrics and deployment configuration are deferred to **Phase 10**.
 
 ## 7. Database Schema Migration Plan (Alembic 004)
 

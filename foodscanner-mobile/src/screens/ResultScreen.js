@@ -23,8 +23,19 @@ import {
   PREMIUM_RADIUS,
 } from '../theme/premiumTheme';
 import { NeoTab } from '../components/neo';
-import { formatNutritionValue } from '../utils/formatters';
-
+import { formatNutritionValue, isNutrientPresent } from '../utils/formatters';
+import {
+  ASSESSMENT_STATUS,
+  normalizeAssessmentStatus,
+  getDecisionMeta,
+} from '../utils/assessment';
+import {
+  AssessmentStatusBadge,
+  ConfidenceBadge,
+  ScoreRangeCard,
+  UnassessableCard,
+  MissingNutrientsCard,
+} from '../components/assessment';
 
 function _calculateServingNutrition(baseNutrition100g, servingGrams) {
   if (!baseNutrition100g || !servingGrams || servingGrams <= 0) return null;
@@ -44,13 +55,35 @@ export default function ResultScreen({ route, navigation }) {
   const result = route?.params?.result;
   const barcode = result?.product?.barcode || result?.barcode;
 
-  const decision = result?.decision?.final_decision || result?.final_decision || 'SAFE';
-  const healthScore = result?.analysis?.health_score ?? result?.health_score ?? 0;
+  const rawDecision = result?.decision?.final_decision || result?.final_decision || null;
+  const rawScore = result?.analysis?.health_score !== undefined ? result?.analysis?.health_score : result?.health_score;
+  const isScoreNumeric = rawScore !== null && rawScore !== undefined && !isNaN(rawScore) && Number.isFinite(Number(rawScore));
+  const healthScore = isScoreNumeric ? Number(rawScore) : null;
+  const scoreRange = result?.score_range || result?.analysis?.score_range || null;
+  const rawStatus = result?.assessment_status || result?.analysis?.assessment_status || null;
+  const confidence = result?.overall_confidence || result?.confidence || result?.product?.data_confidence || null;
+
   const productName = result?.product?.name || result?.product_name || 'Food Product';
   const brand = result?.product?.brand || result?.brand || '';
   const imageUrl = result?.product?.image_url || result?.image_url;
   const rawNutrition = useMemo(() => {
     return result?.product?.nutrition || result?.nutrition || {};
+  }, [result]);
+
+  const assessmentStatus = useMemo(() => {
+    return normalizeAssessmentStatus(rawStatus, {
+      healthScore,
+      scoreRange,
+      nutrition: rawNutrition,
+    });
+  }, [rawStatus, healthScore, scoreRange, rawNutrition]);
+
+  const decisionMeta = useMemo(() => {
+    return getDecisionMeta(rawDecision, assessmentStatus);
+  }, [rawDecision, assessmentStatus]);
+
+  const missingNutrientsList = useMemo(() => {
+    return result?.missing_mandatory_nutrients || result?.explanation?.missing_mandatory_nutrients || null;
   }, [result]);
 
   const ingredientAnalysis = result?.analysis?.ingredient_analysis || result?.ingredient_analysis;
@@ -94,21 +127,27 @@ export default function ResultScreen({ route, navigation }) {
     return scaled || rawNutrition;
   }, [rawNutrition, activePortionTab, servingGrams]);
 
-  const caloriesVal = currentNutrition?.calories ?? 0;
-  const proteinVal = currentNutrition?.protein ?? 0;
-  const carbsVal = currentNutrition?.carbs ?? 0;
-  const sugarVal = currentNutrition?.sugar ?? 0;
-  const fatVal = currentNutrition?.fat ?? 0;
-  const saltVal = currentNutrition?.salt ?? currentNutrition?.sodium ?? 0;
+  const caloriesVal = currentNutrition?.calories;
+  const proteinVal = currentNutrition?.protein;
+  const carbsVal = currentNutrition?.carbs;
+  const sugarVal = currentNutrition?.sugar;
+  const fatVal = currentNutrition?.fat;
+  const saltVal = currentNutrition?.salt !== null && currentNutrition?.salt !== undefined
+    ? currentNutrition.salt
+    : currentNutrition?.sodium;
 
   const handleLogIntake = async () => {
     if (logging || loggedToday) return;
     setLogging(true);
     try {
       const baseServing = activePortionTab === '100g' ? 100 : parseFloat(servingGrams) || 100;
+      const loggedCalories = rawNutrition?.calories != null
+        ? Number(rawNutrition.calories)
+        : (isNutrientPresent(caloriesVal) ? Number(caloriesVal) : 0);
+
       await logFoodItem({
         product_name: productName,
-        calories: rawNutrition?.calories != null ? Number(rawNutrition.calories) : Number(caloriesVal) || 0,
+        calories: loggedCalories,
         fat: rawNutrition?.fat != null ? Number(rawNutrition.fat) : null,
         sugar: rawNutrition?.sugar != null ? Number(rawNutrition.sugar) : null,
         salt: rawNutrition?.salt != null ? Number(rawNutrition.salt) : (rawNutrition?.sodium != null ? Number(rawNutrition.sodium) : null),
@@ -120,7 +159,8 @@ export default function ResultScreen({ route, navigation }) {
         nutrition: currentNutrition,
       });
       setLoggedToday(true);
-      Alert.alert('Logged to Daily Diary', `${productName} (${formatNutritionValue(currentNutrition?.calories ?? caloriesVal)} kcal) has been recorded in your daily intake diary.`);
+      const calDisplay = isNutrientPresent(caloriesVal) ? `${formatNutritionValue(caloriesVal)} kcal` : 'recorded portion';
+      Alert.alert('Logged to Daily Diary', `${productName} (${calDisplay}) has been recorded in your daily intake diary.`);
 
     } catch (e) {
       const msg = getNetworkErrorMessage(e);
@@ -181,7 +221,7 @@ export default function ResultScreen({ route, navigation }) {
           ) : null}
         </View>
 
-        {/* Product Hero Header */}
+        {/* 1. Product Hero Header */}
         <View style={styles.heroCard}>
           <View style={styles.imageCenterWrap}>
             <FoodImage
@@ -196,6 +236,11 @@ export default function ResultScreen({ route, navigation }) {
           {barcode && String(barcode) !== '00000000' ? (
             <Text style={styles.barcodeText}>Barcode: {barcode}</Text>
           ) : null}
+
+          {/* 2. Assessment Status Badge */}
+          <View style={styles.statusBadgeWrap}>
+            <AssessmentStatusBadge status={assessmentStatus} showDescription={false} />
+          </View>
         </View>
 
         {/* Critical Allergen Safety Alert Banner */}
@@ -218,24 +263,102 @@ export default function ResultScreen({ route, navigation }) {
           </View>
         ) : null}
 
-        {/* Health Score Visualization Card */}
-        <View style={[styles.scoreCard, PREMIUM_SHADOWS.sm]}>
-          <ScoreRing
-            score={healthScore}
-            decision={decision}
-            size={150}
-            animated={true}
-          />
+        {/* 3, 4, 5. Health Score / Score Range / Decision / Confidence Card */}
+        {assessmentStatus === ASSESSMENT_STATUS.COMPLETE ? (
+          <View style={[styles.scoreCard, PREMIUM_SHADOWS.sm]}>
+            <ScoreRing
+              score={healthScore}
+              decision={decisionMeta.isValid ? decisionMeta.label : null}
+              size={150}
+              animated={true}
+              showDecision={decisionMeta.isValid}
+            />
 
-          {dietNote ? (
-            <View style={styles.dietNoteBox}>
-              <Ionicons name="bulb-outline" size={16} color={PREMIUM_COLORS.primaryDark} />
-              <Text style={styles.dietNoteText}>{dietNote}</Text>
+            <View style={styles.metaRowUnderScore}>
+              <ConfidenceBadge confidence={confidence} showDescription={true} />
             </View>
-          ) : null}
-        </View>
 
-        {/* Portion Size Toggle */}
+            {dietNote ? (
+              <View style={styles.dietNoteBox}>
+                <Ionicons name="bulb-outline" size={16} color={PREMIUM_COLORS.primaryDark} />
+                <Text style={styles.dietNoteText}>{dietNote}</Text>
+              </View>
+            ) : null}
+          </View>
+        ) : assessmentStatus === ASSESSMENT_STATUS.PARTIAL ? (
+          <View style={styles.assessmentWrapper}>
+            <ScoreRangeCard scoreRange={scoreRange} />
+
+            {/* Decision: only displayed if AVOID is mandated by worst-case bounds or independent rule */}
+            {decisionMeta.isValid && decisionMeta.label === 'AVOID' ? (
+              <View style={[styles.partialAvoidBanner, PREMIUM_SHADOWS.sm]}>
+                <Ionicons name="alert-circle" size={18} color={PREMIUM_COLORS.status.avoid} />
+                <View style={{ flex: 1, marginLeft: 8 }}>
+                  <Text style={styles.partialAvoidTitle}>DECISION: AVOID</Text>
+                  <Text style={styles.partialAvoidText}>
+                    {decisionMeta.sub || 'High risk profile detected despite partial nutritional disclosure.'}
+                  </Text>
+                </View>
+              </View>
+            ) : null}
+
+            <View style={styles.metaRowUnderScore}>
+              <ConfidenceBadge confidence={confidence} showDescription={true} />
+            </View>
+
+            {dietNote ? (
+              <View style={styles.dietNoteBox}>
+                <Ionicons name="bulb-outline" size={16} color={PREMIUM_COLORS.primaryDark} />
+                <Text style={styles.dietNoteText}>{dietNote}</Text>
+              </View>
+            ) : null}
+          </View>
+        ) : assessmentStatus === ASSESSMENT_STATUS.UNASSESSABLE ? (
+          <View style={styles.assessmentWrapper}>
+            <UnassessableCard />
+
+            <View style={styles.metaRowUnderScore}>
+              <ConfidenceBadge confidence={confidence} showDescription={true} />
+            </View>
+
+            {dietNote ? (
+              <View style={styles.dietNoteBox}>
+                <Ionicons name="bulb-outline" size={16} color={PREMIUM_COLORS.primaryDark} />
+                <Text style={styles.dietNoteText}>{dietNote}</Text>
+              </View>
+            ) : null}
+          </View>
+        ) : (
+          /* UNKNOWN status fallback */
+          <View style={styles.assessmentWrapper}>
+            {isScoreNumeric ? (
+              <View style={[styles.scoreCard, PREMIUM_SHADOWS.sm]}>
+                <ScoreRing
+                  score={healthScore}
+                  decision={decisionMeta.isValid ? decisionMeta.label : null}
+                  size={150}
+                  animated={true}
+                  showDecision={decisionMeta.isValid}
+                />
+              </View>
+            ) : (
+              <UnassessableCard />
+            )}
+
+            <View style={styles.metaRowUnderScore}>
+              <ConfidenceBadge confidence={confidence} showDescription={true} />
+            </View>
+
+            {dietNote ? (
+              <View style={styles.dietNoteBox}>
+                <Ionicons name="bulb-outline" size={16} color={PREMIUM_COLORS.primaryDark} />
+                <Text style={styles.dietNoteText}>{dietNote}</Text>
+              </View>
+            ) : null}
+          </View>
+        )}
+
+        {/* 6. Nutritional Information Breakdown */}
         <View style={styles.portionSection}>
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionTitle}>Nutrition Breakdown</Text>
@@ -268,130 +391,202 @@ export default function ResultScreen({ route, navigation }) {
           ) : null}
         </View>
 
-        {/* Nutrition Cards Grid */}
+        {/* 6 Grid Nutrition Cards */}
         <View style={styles.nutritionGrid}>
+          {/* Calories */}
           <View style={[styles.nutrientCard, PREMIUM_SHADOWS.sm]}>
             <View style={styles.nutrientTop}>
               <Ionicons name="flame-outline" size={14} color="#EA580C" />
               <Text style={styles.nutrientName}>Calories</Text>
             </View>
-            <Text style={styles.nutrientValue}>{formatNutritionValue(caloriesVal)}</Text>
-            <Text style={styles.nutrientUnit}>kcal</Text>
-            <View style={styles.nutrientTrack}>
-              <View
-                style={[
-                  styles.nutrientFill,
-                  {
-                    width: `${Math.min(100, (Number(caloriesVal) / 600) * 100)}%`,
-                    backgroundColor: Number(caloriesVal) > 400 ? PREMIUM_COLORS.status.avoid : PREMIUM_COLORS.primaryDark,
-                  },
-                ]}
-              />
-            </View>
+            {isNutrientPresent(caloriesVal) ? (
+              <>
+                <Text style={styles.nutrientValue}>{formatNutritionValue(caloriesVal)}</Text>
+                <Text style={styles.nutrientUnit}>kcal</Text>
+                <View style={styles.nutrientTrack}>
+                  <View
+                    style={[
+                      styles.nutrientFill,
+                      {
+                        width: `${Math.min(100, (Number(caloriesVal) / 600) * 100)}%`,
+                        backgroundColor: Number(caloriesVal) > 400 ? PREMIUM_COLORS.status.avoid : PREMIUM_COLORS.primaryDark,
+                      },
+                    ]}
+                  />
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.nutrientMissingValue}>Not disclosed</Text>
+                <Text style={styles.nutrientUnitMuted}>energy</Text>
+                <View style={[styles.nutrientTrack, styles.nutrientTrackDisabled]} />
+              </>
+            )}
           </View>
 
+          {/* Protein */}
           <View style={[styles.nutrientCard, PREMIUM_SHADOWS.sm]}>
             <View style={styles.nutrientTop}>
               <Ionicons name="leaf-outline" size={14} color={PREMIUM_COLORS.primaryDark} />
               <Text style={styles.nutrientName}>Protein</Text>
             </View>
-            <Text style={styles.nutrientValue}>{formatNutritionValue(proteinVal)}g</Text>
-            <Text style={styles.nutrientUnit}>target 10g+</Text>
-            <View style={styles.nutrientTrack}>
-              <View
-                style={[
-                  styles.nutrientFill,
-                  {
-                    width: `${Math.min(100, (Number(proteinVal) / 20) * 100)}%`,
-                    backgroundColor: PREMIUM_COLORS.primary,
-                  },
-                ]}
-              />
-            </View>
+            {isNutrientPresent(proteinVal) ? (
+              <>
+                <Text style={styles.nutrientValue}>{formatNutritionValue(proteinVal)}g</Text>
+                <Text style={styles.nutrientUnit}>target 10g+</Text>
+                <View style={styles.nutrientTrack}>
+                  <View
+                    style={[
+                      styles.nutrientFill,
+                      {
+                        width: `${Math.min(100, (Number(proteinVal) / 20) * 100)}%`,
+                        backgroundColor: PREMIUM_COLORS.primary,
+                      },
+                    ]}
+                  />
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.nutrientMissingValue}>Not disclosed</Text>
+                <Text style={styles.nutrientUnitMuted}>protein</Text>
+                <View style={[styles.nutrientTrack, styles.nutrientTrackDisabled]} />
+              </>
+            )}
           </View>
 
+          {/* Carbs */}
           <View style={[styles.nutrientCard, PREMIUM_SHADOWS.sm]}>
             <View style={styles.nutrientTop}>
               <Ionicons name="nutrition-outline" size={14} color="#D97706" />
               <Text style={styles.nutrientName}>Carbs</Text>
             </View>
-            <Text style={styles.nutrientValue}>{formatNutritionValue(carbsVal)}g</Text>
-            <Text style={styles.nutrientUnit}>energy</Text>
-            <View style={styles.nutrientTrack}>
-              <View
-                style={[
-                  styles.nutrientFill,
-                  {
-                    width: `${Math.min(100, (Number(carbsVal) / 80) * 100)}%`,
-                    backgroundColor: '#E8B342',
-                  },
-                ]}
-              />
-            </View>
+            {isNutrientPresent(carbsVal) ? (
+              <>
+                <Text style={styles.nutrientValue}>{formatNutritionValue(carbsVal)}g</Text>
+                <Text style={styles.nutrientUnit}>energy</Text>
+                <View style={styles.nutrientTrack}>
+                  <View
+                    style={[
+                      styles.nutrientFill,
+                      {
+                        width: `${Math.min(100, (Number(carbsVal) / 80) * 100)}%`,
+                        backgroundColor: '#E8B342',
+                      },
+                    ]}
+                  />
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.nutrientMissingValue}>Not disclosed</Text>
+                <Text style={styles.nutrientUnitMuted}>carbohydrates</Text>
+                <View style={[styles.nutrientTrack, styles.nutrientTrackDisabled]} />
+              </>
+            )}
           </View>
 
+          {/* Sugar */}
           <View style={[styles.nutrientCard, PREMIUM_SHADOWS.sm]}>
             <View style={styles.nutrientTop}>
               <Ionicons name="water-outline" size={14} color="#0D9488" />
               <Text style={styles.nutrientName}>Sugar</Text>
             </View>
-            <Text style={styles.nutrientValue}>{formatNutritionValue(sugarVal)}g</Text>
-            <Text style={styles.nutrientUnit}>max 5g recommended</Text>
-            <View style={styles.nutrientTrack}>
-              <View
-                style={[
-                  styles.nutrientFill,
-                  {
-                    width: `${Math.min(100, (Number(sugarVal) / 25) * 100)}%`,
-                    backgroundColor: Number(sugarVal) > 10 ? PREMIUM_COLORS.status.avoid : '#8FA866',
-                  },
-                ]}
-              />
-            </View>
+            {isNutrientPresent(sugarVal) ? (
+              <>
+                <Text style={styles.nutrientValue}>{formatNutritionValue(sugarVal)}g</Text>
+                <Text style={styles.nutrientUnit}>max 5g recommended</Text>
+                <View style={styles.nutrientTrack}>
+                  <View
+                    style={[
+                      styles.nutrientFill,
+                      {
+                        width: `${Math.min(100, (Number(sugarVal) / 25) * 100)}%`,
+                        backgroundColor: Number(sugarVal) > 10 ? PREMIUM_COLORS.status.avoid : '#8FA866',
+                      },
+                    ]}
+                  />
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.nutrientMissingValue}>Not disclosed</Text>
+                <Text style={styles.nutrientUnitMuted}>sugars</Text>
+                <View style={[styles.nutrientTrack, styles.nutrientTrackDisabled]} />
+              </>
+            )}
           </View>
 
+          {/* Fat */}
           <View style={[styles.nutrientCard, PREMIUM_SHADOWS.sm]}>
             <View style={styles.nutrientTop}>
               <Ionicons name="ellipse-outline" size={14} color="#B45309" />
               <Text style={styles.nutrientName}>Fat</Text>
             </View>
-            <Text style={styles.nutrientValue}>{formatNutritionValue(fatVal)}g</Text>
-            <Text style={styles.nutrientUnit}>total fat</Text>
-            <View style={styles.nutrientTrack}>
-              <View
-                style={[
-                  styles.nutrientFill,
-                  {
-                    width: `${Math.min(100, (Number(fatVal) / 30) * 100)}%`,
-                    backgroundColor: Number(fatVal) > 15 ? PREMIUM_COLORS.status.moderate : '#8FA866',
-                  },
-                ]}
-              />
-            </View>
+            {isNutrientPresent(fatVal) ? (
+              <>
+                <Text style={styles.nutrientValue}>{formatNutritionValue(fatVal)}g</Text>
+                <Text style={styles.nutrientUnit}>total fat</Text>
+                <View style={styles.nutrientTrack}>
+                  <View
+                    style={[
+                      styles.nutrientFill,
+                      {
+                        width: `${Math.min(100, (Number(fatVal) / 30) * 100)}%`,
+                        backgroundColor: Number(fatVal) > 15 ? PREMIUM_COLORS.status.moderate : '#8FA866',
+                      },
+                    ]}
+                  />
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.nutrientMissingValue}>Not disclosed</Text>
+                <Text style={styles.nutrientUnitMuted}>lipids</Text>
+                <View style={[styles.nutrientTrack, styles.nutrientTrackDisabled]} />
+              </>
+            )}
           </View>
 
+          {/* Salt / Sodium */}
           <View style={[styles.nutrientCard, PREMIUM_SHADOWS.sm]}>
             <View style={styles.nutrientTop}>
               <Ionicons name="cube-outline" size={14} color="#4B5563" />
               <Text style={styles.nutrientName}>Salt / Sodium</Text>
             </View>
-            <Text style={styles.nutrientValue}>{formatNutritionValue(saltVal)}g</Text>
-            <Text style={styles.nutrientUnit}>salt equivalent</Text>
-            <View style={styles.nutrientTrack}>
-              <View
-                style={[
-                  styles.nutrientFill,
-                  {
-                    width: `${Math.min(100, (Number(saltVal) / 2) * 100)}%`,
-                    backgroundColor: Number(saltVal) > 1.5 ? PREMIUM_COLORS.status.avoid : '#8FA866',
-                  },
-                ]}
-              />
-            </View>
+            {isNutrientPresent(saltVal) ? (
+              <>
+                <Text style={styles.nutrientValue}>{formatNutritionValue(saltVal)}g</Text>
+                <Text style={styles.nutrientUnit}>salt equivalent</Text>
+                <View style={styles.nutrientTrack}>
+                  <View
+                    style={[
+                      styles.nutrientFill,
+                      {
+                        width: `${Math.min(100, (Number(saltVal) / 2) * 100)}%`,
+                        backgroundColor: Number(saltVal) > 1.5 ? PREMIUM_COLORS.status.avoid : '#8FA866',
+                      },
+                    ]}
+                  />
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.nutrientMissingValue}>Not disclosed</Text>
+                <Text style={styles.nutrientUnitMuted}>salt / sodium</Text>
+                <View style={[styles.nutrientTrack, styles.nutrientTrackDisabled]} />
+              </>
+            )}
           </View>
         </View>
 
-        {/* Ingredient Intelligence Section */}
+        {/* 7. Missing Mandatory Nutrient Disclosures */}
+        <MissingNutrientsCard
+          nutrition={rawNutrition}
+          missingList={missingNutrientsList}
+        />
+
+        {/* 8. Ingredient Intelligence Section */}
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Ingredient Intelligence</Text>
           <Text style={styles.sectionCount}>{ingredientsList.length} items flagged</Text>
@@ -460,6 +655,7 @@ export default function ResultScreen({ route, navigation }) {
           </View>
         ) : null}
 
+        {/* 9. Recommendations, Comparisons & AI Assistant */}
         {/* FSSAI Statutory Claim Verification Card */}
         <ClaimVerificationCard
           initialVerification={result?.claims_verification || result?.claim_verification}
@@ -510,7 +706,7 @@ export default function ResultScreen({ route, navigation }) {
           productName={productName}
           nutrition={currentNutrition}
           healthScore={healthScore}
-          decision={decision}
+          decision={decisionMeta.isValid ? decisionMeta.label : null}
         />
 
         {/* Explicit Intake Logging Action Button (Scan ≠ Eat Invariant) */}
@@ -614,6 +810,10 @@ const styles = StyleSheet.create({
     color: PREMIUM_COLORS.secondary,
     marginTop: 4,
   },
+  statusBadgeWrap: {
+    marginTop: 8,
+    alignItems: 'center',
+  },
 
   // Allergen Alert Banners
   allergenAlertBanner: {
@@ -660,7 +860,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  // Score Card
+  // Score & Assessment Cards
   scoreCard: {
     backgroundColor: PREMIUM_COLORS.card,
     borderRadius: PREMIUM_RADIUS.xl,
@@ -668,6 +868,36 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     borderWidth: 1,
     borderColor: PREMIUM_COLORS.border,
+  },
+  assessmentWrapper: {
+    marginBottom: 16,
+  },
+  metaRowUnderScore: {
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  partialAvoidBanner: {
+    backgroundColor: PREMIUM_COLORS.status.avoidBg,
+    borderRadius: PREMIUM_RADIUS.lg,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: PREMIUM_COLORS.status.avoidBorder,
+  },
+  partialAvoidTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: PREMIUM_COLORS.status.avoid,
+    letterSpacing: 0.5,
+  },
+  partialAvoidText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: PREMIUM_COLORS.status.avoid,
+    lineHeight: 16,
+    marginTop: 2,
   },
   dietNoteBox: {
     flexDirection: 'row',
@@ -677,9 +907,6 @@ const styles = StyleSheet.create({
     padding: 12,
     marginTop: 12,
     gap: 8,
-  },
-  dietNoteIcon: {
-    fontSize: 16,
   },
   dietNoteText: {
     flex: 1,
@@ -748,7 +975,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 10,
-    marginBottom: 18,
+    marginBottom: 14,
   },
   nutrientCard: {
     width: '48%',
@@ -764,9 +991,6 @@ const styles = StyleSheet.create({
     gap: 6,
     marginBottom: 4,
   },
-  nutrientEmoji: {
-    fontSize: 13,
-  },
   nutrientName: {
     fontSize: 13,
     fontWeight: '600',
@@ -778,17 +1002,35 @@ const styles = StyleSheet.create({
     color: PREMIUM_COLORS.ink,
     letterSpacing: -0.3,
   },
+  nutrientMissingValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#7C837B',
+    letterSpacing: -0.2,
+    marginVertical: 3,
+  },
   nutrientUnit: {
     fontSize: 11,
     fontWeight: '500',
     color: PREMIUM_COLORS.muted,
     marginBottom: 8,
   },
+  nutrientUnitMuted: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#9CA3AF',
+    marginBottom: 8,
+    textTransform: 'capitalize',
+  },
   nutrientTrack: {
     height: 4,
     backgroundColor: PREMIUM_COLORS.bgAlt,
     borderRadius: 2,
     overflow: 'hidden',
+  },
+  nutrientTrackDisabled: {
+    backgroundColor: '#E2E8F0',
+    opacity: 0.6,
   },
   nutrientFill: {
     height: '100%',
@@ -854,24 +1096,25 @@ const styles = StyleSheet.create({
     padding: 16,
     alignItems: 'center',
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: PREMIUM_COLORS.status.safeBorder,
   },
   cleanTitle: {
     fontSize: 15,
     fontWeight: '700',
     color: PREMIUM_COLORS.primaryDark,
+    marginBottom: 4,
   },
   cleanSub: {
-    fontSize: 13,
-    fontWeight: '400',
+    fontSize: 12,
     color: PREMIUM_COLORS.primaryDark,
     textAlign: 'center',
-    marginTop: 4,
-    lineHeight: 18,
+    lineHeight: 17,
   },
 
-  // Additives
+  // Additives Section
   additivesSection: {
-    marginBottom: 16,
+    marginBottom: 18,
   },
   subSectionTitle: {
     fontSize: 14,
@@ -882,36 +1125,35 @@ const styles = StyleSheet.create({
   additivesChipsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 6,
+    gap: 8,
   },
   additiveChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
     backgroundColor: PREMIUM_COLORS.status.avoidBg,
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: PREMIUM_RADIUS.pill,
-    borderWidth: 1,
-    borderColor: PREMIUM_COLORS.status.avoidBorder,
+    gap: 4,
   },
   additiveChipText: {
-    fontSize: 11,
-    fontWeight: '700',
+    fontSize: 12,
+    fontWeight: '600',
     color: PREMIUM_COLORS.status.avoid,
   },
 
-  // Diary Action
+  // Diary Logging
   diaryActionContainer: {
-    marginTop: 8,
+    marginTop: 10,
     marginBottom: 20,
     alignItems: 'center',
   },
   logDiaryBtn: {
-    width: '100%',
     backgroundColor: PREMIUM_COLORS.ink,
-    paddingVertical: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 24,
     borderRadius: PREMIUM_RADIUS.pill,
+    width: '100%',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -921,26 +1163,27 @@ const styles = StyleSheet.create({
   logDiaryContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    justifyContent: 'center',
   },
   logDiaryIcon: {
-    fontSize: 16,
-    fontWeight: '800',
     color: PREMIUM_COLORS.white,
+    fontSize: 16,
+    fontWeight: '700',
+    marginRight: 6,
   },
   logDiaryText: {
+    color: PREMIUM_COLORS.white,
     fontSize: 15,
     fontWeight: '700',
-    color: PREMIUM_COLORS.white,
     letterSpacing: 0.2,
   },
   scanNotEatDisclaimer: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '500',
-    color: PREMIUM_COLORS.secondary,
+    color: PREMIUM_COLORS.muted,
     textAlign: 'center',
     marginTop: 8,
-    maxWidth: '90%',
     lineHeight: 16,
+    paddingHorizontal: 12,
   },
 });

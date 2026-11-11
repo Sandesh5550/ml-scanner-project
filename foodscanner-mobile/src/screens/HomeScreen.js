@@ -77,6 +77,9 @@ function _greeting(name) {
 }
 
 function _scoreMeta(score) {
+  if (score === null || score === undefined || isNaN(score)) {
+    return { fg: '#64748B', bg: '#F1F5F9', label: '—' };
+  }
   const s = Number(score) || 0;
   if (s >= 70) return { fg: PREMIUM_COLORS.status.safe, bg: PREMIUM_COLORS.status.safeBg, label: 'SAFE' };
   if (s >= 45) return { fg: PREMIUM_COLORS.status.moderate, bg: PREMIUM_COLORS.status.moderateBg, label: 'MODERATE' };
@@ -796,7 +799,8 @@ export default function HomeScreen({ navigation }) {
             >
               {recentScans.slice(0, 6).map((item, idx) => {
                 const pName = item?.product_name || item?.name || 'Scanned Product';
-                const pScore = item?.health_score != null ? Math.round(Number(item.health_score)) : 72;
+                const hasScore = item?.health_score != null && !isNaN(item.health_score);
+                const pScore = hasScore ? Math.round(Number(item.health_score)) : null;
                 const pMeta = _scoreMeta(pScore);
                 const barcode = item?.barcode;
 
@@ -819,9 +823,9 @@ export default function HomeScreen({ navigation }) {
                     </Text>
                     <View style={styles.recentScanFooter}>
                       <View style={[styles.recentScorePill, { backgroundColor: pMeta.bg }]}>
-                        <View style={[styles.scoreDot, { backgroundColor: pMeta.fg }]} />
+                        {hasScore ? <View style={[styles.scoreDot, { backgroundColor: pMeta.fg }]} /> : null}
                         <Text style={[styles.recentScoreText, { color: pMeta.fg }]}>
-                          {pScore}
+                          {hasScore ? pScore : '—'}
                         </Text>
                       </View>
                       <Text style={styles.recentActionHint}>Tap to view →</Text>
@@ -919,6 +923,14 @@ export default function HomeScreen({ navigation }) {
 
             })
           )}
+
+          {/* Open Food Facts ODbL Attribution Notice */}
+          <View style={styles.odblFooter}>
+            <Ionicons name="information-circle-outline" size={13} color={PREMIUM_COLORS.secondary} style={{ marginRight: 5, marginTop: 1 }} />
+            <Text style={styles.odblText}>
+              Product data sourced from Open Food Facts (openfoodfacts.org), made available under the Open Database License (ODbL) v1.0.
+            </Text>
+          </View>
         </Animated.View>
       </ScrollView>
     </View>
@@ -1612,5 +1624,19 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 4,
     lineHeight: 18,
+  },
+  odblFooter: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginTop: 24,
+    marginBottom: 8,
+    paddingHorizontal: 8,
+  },
+  odblText: {
+    flex: 1,
+    fontSize: 11,
+    lineHeight: 16,
+    color: PREMIUM_COLORS.secondary,
+    fontWeight: '500',
   },
 });

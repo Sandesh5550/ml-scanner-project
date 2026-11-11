@@ -165,6 +165,11 @@ export async function scanProduct(barcode, productName, claims = null) {
   return res.data;
 }
 
+export async function getProduct(barcode) {
+  const res = await client.get(`/product/${encodeURIComponent(barcode)}`);
+  return res.data;
+}
+
 export async function searchProduct(query) {
   const res = await client.get('/search', { params: { query } });
   return res.data;
