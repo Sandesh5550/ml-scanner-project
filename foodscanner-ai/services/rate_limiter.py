@@ -8,11 +8,49 @@ import math
 import os
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from fastapi import HTTPException, Request
 
+try:
+    import redis
+except ImportError:
+    redis = None
+
 logger = logging.getLogger(__name__)
+
+# Atomic Redis sliding-window Lua script.
+# Returns {allowed (1 or 0), retry_after_seconds (0 or calculated)}
+REDIS_SLIDING_WINDOW_LUA = """
+local key = KEYS[1]
+local window = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+
+-- Prefer authoritative Redis server TIME to eliminate inter-container clock skew/monotonic drift
+local now = tonumber(ARGV[1])
+local ok, rtime = pcall(redis.call, 'TIME')
+if ok and rtime and #rtime >= 2 then
+    now = tonumber(rtime[1]) + (tonumber(rtime[2]) / 1000000.0)
+end
+
+local clearBefore = now - window
+
+redis.call('ZREMRANGEBYSCORE', key, '-inf', clearBefore)
+local currentCount = redis.call('ZCARD', key)
+if currentCount < limit then
+    redis.call('ZADD', key, now, now .. ':' .. math.random(100000, 999999))
+    redis.call('EXPIRE', key, math.ceil(window) + 1)
+    return {1, 0}
+else
+    local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+    local retry_after = 1
+    if oldest and #oldest >= 2 then
+        local oldest_ts = tonumber(oldest[2])
+        retry_after = math.max(1, math.ceil(window - (now - oldest_ts)))
+    end
+    return {0, retry_after}
+end
+"""
 
 
 def _parse_int_env(
@@ -312,7 +350,7 @@ class SlidingWindowRateLimiter:
     rate limiting across replicas (e.g. via Redis) is planned for a future phase.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, redis_client: Optional[Any] = None) -> None:
         self._lock = threading.Lock()
         self._records: Dict[Tuple[str, str], deque] = defaultdict(deque)
         self._user_keys: set[Tuple[str, str]] = set()
@@ -321,6 +359,115 @@ class SlidingWindowRateLimiter:
         self._cleanup_interval: float = _parse_float_env("RATE_LIMIT_CLEANUP_INTERVAL_SECONDS", 60.0, min_val=1.0)
         self._cleanup_task: Optional[asyncio.Task] = None
         self._cleanup_running: bool = False
+        self._redis_client: Optional[Any] = redis_client
+        self._redis_attempted_init: bool = False
+        self._redis_active: bool = redis_client is not None
+
+    def set_redis_client(self, client: Optional[Any]) -> None:
+        """Inject or clear a shared Redis client instance."""
+        with self._lock:
+            self._redis_client = client
+            self._redis_active = client is not None
+            self._redis_attempted_init = True
+
+    def is_redis_active(self) -> bool:
+        """Check if Redis distributed rate limiting is currently healthy and active."""
+        return self._redis_active and self._redis_client is not None
+
+    def get_fail_closed_endpoints(self) -> set[str]:
+        """Retrieve set of sensitive endpoints designated for fail-closed policy on Redis failure."""
+        raw = os.getenv("RATE_LIMIT_REDIS_FAIL_CLOSED_ENDPOINTS", "auth,ocr,batch")
+        return {ep.strip().lower() for ep in raw.split(",") if ep.strip()}
+
+    def is_strict_fail_closed(self, endpoint_key: str) -> bool:
+        """Determine whether endpoint should strictly fail-closed rather than fall back to process-local limiting."""
+        strict = os.getenv("RATE_LIMIT_STRICT_FAIL_CLOSED", "false").strip().lower() in {"1", "true", "yes"}
+        return strict and (endpoint_key.lower() in self.get_fail_closed_endpoints())
+
+    def _get_or_init_redis(self) -> Optional[Any]:
+        """Lazily initialize Redis connection if configured via REDIS_URL."""
+        if self._redis_client is not None:
+            return self._redis_client
+
+        if self._redis_attempted_init:
+            return None
+
+        with self._lock:
+            if self._redis_attempted_init:
+                return self._redis_client
+            self._redis_attempted_init = True
+
+            redis_url = os.getenv("REDIS_URL")
+            if not redis_url or not redis_url.strip():
+                return None
+
+            if redis is None:
+                logger.warning(
+                    "REDIS_URL is configured, but 'redis' Python package is not installed. "
+                    "Falling back to process-local in-memory rate limiting."
+                )
+                return None
+
+            try:
+                client = redis.from_url(
+                    redis_url.strip(),
+                    decode_responses=True,
+                    socket_connect_timeout=1.0,
+                    socket_timeout=1.0,
+                )
+                client.ping()
+                self._redis_client = client
+                self._redis_active = True
+                logger.info("Successfully connected to Redis distributed rate limiter.")
+                try:
+                    from services.metrics import record_redis_status
+                    record_redis_status(True)
+                except Exception:
+                    pass
+                return self._redis_client
+            except Exception as exc:
+                logger.warning(
+                    "Failed to connect to Redis at %s: %s. Falling back to process-local rate limiting.",
+                    redis_url[:32],
+                    exc,
+                )
+                self._redis_active = False
+                try:
+                    from services.metrics import record_redis_status
+                    record_redis_status(False)
+                except Exception:
+                    pass
+                return None
+
+    def _check_redis(
+        self,
+        endpoint_key: str,
+        client_key: str,
+        now: float,
+    ) -> Tuple[bool, int]:
+        """Execute atomic Redis sliding-window Lua script for distributed token allocation."""
+        client = self._get_or_init_redis()
+        if client is None:
+            raise RuntimeError("Redis client is unavailable")
+
+        max_requests, window = self.get_client_threshold(endpoint_key, client_key)
+        redis_key = f"ratelimit:{endpoint_key}:{client_key}"
+
+        res = client.eval(
+            REDIS_SLIDING_WINDOW_LUA,
+            1,
+            redis_key,
+            str(now),
+            str(window),
+            str(max_requests),
+        )
+
+        if isinstance(res, (list, tuple)) and len(res) >= 2:
+            return (bool(res[0]), int(res[1]))
+        elif isinstance(res, (int, bool)):
+            allowed = bool(res)
+            return (allowed, 0 if allowed else window)
+        return (False, window)
 
     def is_enabled(self) -> bool:
         """Check if rate limiting is enabled via environment."""
@@ -485,7 +632,7 @@ class SlidingWindowRateLimiter:
         client_key: str,
         current_time: Optional[float] = None,
     ) -> Tuple[bool, int]:
-        """Check and record an access attempt against partitioned capacity pools.
+        """Check and record an access attempt against partitioned capacity pools or distributed Redis.
 
         Returns:
             (is_allowed, retry_after_seconds)
@@ -494,7 +641,38 @@ class SlidingWindowRateLimiter:
             return True, 0
 
         max_requests, window = self.get_client_threshold(endpoint_key, client_key)
-        now = current_time if current_time is not None else time.monotonic()
+        now_epoch = current_time if current_time is not None else time.time()
+        now_local = current_time if current_time is not None else time.monotonic()
+
+        # Check distributed Redis rate limit if Redis is configured
+        if self._redis_client is not None or (not self._redis_attempted_init and os.getenv("REDIS_URL")):
+            try:
+                allowed, retry_after = self._check_redis(endpoint_key, client_key, now_epoch)
+                self._redis_active = True
+                return allowed, retry_after
+            except Exception as exc:
+                logger.warning(
+                    "Distributed Redis rate limiting check failed for endpoint '%s': %s",
+                    endpoint_key,
+                    exc,
+                )
+                self._redis_active = False
+                try:
+                    from services.metrics import record_redis_status
+                    record_redis_status(False)
+                except Exception:
+                    pass
+
+                # Strict fail-closed policy check for sensitive endpoints
+                if self.is_strict_fail_closed(endpoint_key):
+                    logger.error(
+                        "Strict fail-closed rate limit policy activated for endpoint '%s' on Redis failure.",
+                        endpoint_key,
+                    )
+                    return False, window
+                # Otherwise, continue below to process-local in-memory sliding window fallback
+
+        now = now_local
         window_start = now - window
         key = (endpoint_key, client_key)
         is_auth = self.is_authenticated_client(client_key)
@@ -552,6 +730,9 @@ class SlidingWindowRateLimiter:
             self._user_keys.clear()
             self._anon_keys.clear()
             self._last_cleanup = time.monotonic()
+            self._redis_client = None
+            self._redis_attempted_init = False
+            self._redis_active = False
 
     async def start_background_cleanup(self, interval: Optional[float] = None) -> None:
         """Start a periodic background asyncio task to purge expired rate-limit records."""

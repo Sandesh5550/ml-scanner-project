@@ -13,11 +13,12 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import Any, Optional
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import func, select, text
@@ -32,7 +33,19 @@ from services import db_service
 from services.health_report import generate_daily_report, generate_weekly_report
 from services.score_explainer import explain_score
 from services.goal_report import generate_goal_report
-from services.auth_service import create_access_token, get_current_user, hash_password, verify_password
+from services.auth_service import (
+    claim_and_revoke_refresh_token,
+    create_access_token,
+    create_refresh_token,
+    get_current_user,
+    get_revocation_store,
+    hash_password,
+    is_token_revoked,
+    revoke_token,
+    security,
+    verify_password,
+    verify_refresh_token,
+)
 from services.ingredient_analyzer import analyze_ingredients
 from services.additive_analyzer import analyze_additives
 from services.food_health_score import compute_food_health_score, compute_diet_aware_score
@@ -64,12 +77,14 @@ from services.rate_limiter import enforce_rate_limit, get_rate_limiter
 from services.metrics import (
     get_metrics_exposition,
     normalize_metric_endpoint,
+    record_batch_job_status,
     record_database_status,
     record_http_request,
     record_ocr_confidence,
     record_ocr_job_created,
     record_ocr_job_status,
     record_ocr_stale_reaped,
+    record_redis_status,
 )
 
 # Load environment configuration early
@@ -97,6 +112,16 @@ def _get_allowed_origins() -> list[str]:
         if origin not in origins and origin != "*":
             origins.append(origin)
     return origins
+
+
+def is_admin_user(user: Optional[User]) -> bool:
+    """Determine whether user has administrator privileges without requiring DB schema changes."""
+    if not user or not user.email:
+        return False
+    admin_emails = os.environ.get("ADMIN_EMAILS", "")
+    configured = {e.strip().lower() for e in admin_emails.split(",") if e.strip()}
+    email = user.email.strip().lower()
+    return email in configured or email.startswith("admin@")
 
 
 @asynccontextmanager
@@ -133,9 +158,13 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Startup stale batch job recovery warning: %s", exc)
 
-    # Initialize rate limiter background cleanup
+    # Initialize rate limiter background cleanup and wire shared Redis backend
     rate_limiter = get_rate_limiter()
     await rate_limiter.start_background_cleanup()
+    redis_client = rate_limiter._get_or_init_redis()
+    if redis_client is not None:
+        get_revocation_store().set_redis_client(redis_client)
+        get_default_job_manager().set_redis_client(redis_client)
 
     # Bind application-owned AsyncClient to OpenFoodFactsClient during lifespan
     shared_off_client = get_default_off_client()
@@ -197,6 +226,51 @@ async def prometheus_metrics_middleware(request: Request, call_next):
             status_code=status_code,
             duration_seconds=duration,
         )
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    # Enforce request payload size limit to prevent memory exhaustion / DoS
+    # Configurable via MAX_REQUEST_BODY_SIZE (default 15 MB)
+    max_body_bytes = int(os.environ.get("MAX_REQUEST_BODY_SIZE", str(15 * 1024 * 1024)))
+    content_length = request.headers.get("content-length")
+    transfer_encoding = request.headers.get("transfer-encoding", "").lower()
+
+    if content_length:
+        try:
+            cl = int(content_length)
+            if cl > max_body_bytes:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request payload exceeds maximum allowed size."},
+                )
+        except ValueError:
+            pass
+    elif "chunked" in transfer_encoding or request.method in ("POST", "PUT", "PATCH"):
+        # Consume stream with bounded accumulator to guard chunked/missing content-length payloads
+        body_chunks = []
+        total_bytes = 0
+        async for chunk in request.stream():
+            total_bytes += len(chunk)
+            if total_bytes > max_body_bytes:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request payload exceeds maximum allowed size."},
+                )
+            body_chunks.append(chunk)
+
+        body_bytes = b"".join(body_chunks)
+        async def receive():
+            return {"type": "http.request", "body": body_bytes, "more_body": False}
+        request = Request(request.scope, receive=receive)
+
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 class ScanRequest(BaseModel):
@@ -1041,12 +1115,14 @@ def health() -> dict:
 
 @app.get("/health/ready", tags=["tracking"])
 @app.get("/ready", tags=["tracking"])
-def readiness_check(db: Session = Depends(get_db)) -> dict:
-    """Readiness probe: verifies database connectivity and pool health."""
+def readiness_check(
+    db: Session = Depends(get_db),
+    detailed: bool = Query(False),
+) -> dict:
+    """Readiness probe: verifies database connectivity, Redis limiter state, and datasets."""
     try:
         db.execute(text("SELECT 1"))
         record_database_status(True)
-        return {"status": "ready", "database": "connected"}
     except Exception as exc:
         record_database_status(False)
         logger.error("Readiness probe database connection failure: %s", exc)
@@ -1054,6 +1130,20 @@ def readiness_check(db: Session = Depends(get_db)) -> dict:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database connection unavailable",
         )
+
+    res = {"status": "ready", "database": "connected"}
+
+    rate_limiter = get_rate_limiter()
+    if rate_limiter.is_redis_active():
+        res["redis"] = "connected"
+    elif detailed:
+        res["redis"] = "disconnected" if os.getenv("REDIS_URL") else "not_configured"
+
+    if detailed:
+        df = _get_indian_foods_df()
+        res["datasets"] = "ready" if df is not None and not df.empty else "unavailable"
+
+    return res
 
 
 @app.exception_handler(Exception)
@@ -1064,6 +1154,10 @@ async def global_unhandled_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"detail": "An internal server error occurred. Please try again later."},
     )
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(..., min_length=10)
 
 
 @app.post("/register", tags=["auth"])
@@ -1091,7 +1185,12 @@ def register(req: RegisterRequest, request: Request, db: Session = Depends(get_d
     db.refresh(user)
 
     token = create_access_token(user_id=int(user.id))
-    return {"access_token": token, "token_type": "bearer"}
+    refresh_token = create_refresh_token(user_id=int(user.id))
+    return {
+        "access_token": token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+    }
 
 
 @app.post("/login", tags=["auth"])
@@ -1107,7 +1206,66 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)) ->
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     token = create_access_token(user_id=int(user.id))
-    return {"access_token": token, "token_type": "bearer"}
+    refresh_token = create_refresh_token(user_id=int(user.id))
+    return {
+        "access_token": token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+    }
+
+
+@app.post("/auth/refresh", tags=["auth"])
+def refresh_token_endpoint(
+    req: RefreshTokenRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    enforce_rate_limit("auth", request)
+    user_id = verify_refresh_token(req.refresh_token)
+
+    # Atomic rotation & replay detection: claim and revoke the submitted refresh token
+    claimed = claim_and_revoke_refresh_token(req.refresh_token)
+    if not claimed:
+        logger.warning("Replay or duplicate refresh token attempt detected for user %d", user_id)
+        raise HTTPException(
+            status_code=401,
+            detail="Refresh token has already been used or revoked.",
+        )
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    new_access_token = create_access_token(user_id=int(user.id))
+    new_refresh_token = create_refresh_token(user_id=int(user.id))
+    return {
+        "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
+        "token_type": "bearer",
+    }
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
+
+
+@app.post("/auth/logout", tags=["auth"])
+def logout_endpoint(
+    req: LogoutRequest | None = Body(default=None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    has_cred = credentials is not None and bool(credentials.credentials)
+    has_refresh = req is not None and bool(req.refresh_token)
+    if not has_cred and not has_refresh:
+        raise HTTPException(status_code=401, detail="Missing Authorization token or refresh token")
+
+    if has_cred:
+        revoke_token(credentials.credentials)
+
+    if has_refresh:
+        revoke_token(req.refresh_token)
+
+    return {"status": "logged_out", "message": "Token has been revoked successfully."}
 
 
 @app.get("/search", tags=["products"])
@@ -1907,6 +2065,7 @@ async def ingest_batch_endpoint(
         job = job_mgr.create_job(
             barcodes=payload.barcodes,
             force_refresh=payload.force_refresh,
+            user_id=current_user.id,
         )
         background_tasks.add_task(execute_batch_job_background_task, job.job_id)
         base_url = str(request.base_url).rstrip("/")
@@ -1943,6 +2102,16 @@ def get_batch_job_endpoint(
     job = job_mgr.get_job(clean_job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Batch job '{clean_job_id}' not found.")
+
+    # Restrict unowned legacy jobs (user_id is None) to administrators when strict batch ownership is enabled
+    strict_ownership = os.getenv("STRICT_BATCH_OWNERSHIP", "").strip().lower() in {"1", "true", "yes"}
+    if job.user_id is None and strict_ownership and not is_admin_user(current_user):
+        raise HTTPException(status_code=404, detail=f"Batch job '{clean_job_id}' not found.")
+
+    # Restrict owned jobs to submitting owner or system administrator (return 404 to prevent enumeration)
+    if job.user_id is not None and job.user_id != current_user.id and not is_admin_user(current_user):
+        raise HTTPException(status_code=404, detail=f"Batch job '{clean_job_id}' not found.")
+
     base_url = str(request.base_url).rstrip("/")
     return job.to_response(base_url).model_dump()
 
@@ -1959,9 +2128,27 @@ def retry_batch_job_endpoint(
     enforce_rate_limit("batch", request, user_id=current_user.id)
     clean_job_id = str(job_id).strip()
     job_mgr = get_default_job_manager()
+
+    # Verify existence and ownership prior to retry (return 404 to prevent enumeration)
+    original_job = job_mgr.get_job(clean_job_id)
+    if not original_job:
+        raise HTTPException(status_code=404, detail=f"Batch job '{clean_job_id}' not found.")
+
+    # Restrict unowned legacy jobs to administrators when strict batch ownership is enabled
+    strict_ownership = os.getenv("STRICT_BATCH_OWNERSHIP", "").strip().lower() in {"1", "true", "yes"}
+    if original_job.user_id is None and strict_ownership and not is_admin_user(current_user):
+        raise HTTPException(status_code=404, detail=f"Batch job '{clean_job_id}' not found.")
+
+    if original_job.user_id is not None and original_job.user_id != current_user.id and not is_admin_user(current_user):
+        raise HTTPException(status_code=404, detail=f"Batch job '{clean_job_id}' not found.")
+
     force_refresh = payload.force_refresh if payload else None
     try:
-        retry_job = job_mgr.retry_job(clean_job_id, force_refresh=force_refresh)
+        retry_job = job_mgr.retry_job(
+            clean_job_id,
+            force_refresh=force_refresh,
+            user_id=current_user.id,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

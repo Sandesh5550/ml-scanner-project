@@ -62,9 +62,16 @@ DEFAULT_COOLDOWN_SECONDS = 60.0
 # Redis Lua Script for Atomic Sliding-Window Rate Limiting
 REDIS_SLIDING_WINDOW_LUA = """
 local key = KEYS[1]
-local now = tonumber(ARGV[1])
 local window = tonumber(ARGV[2])
 local limit = tonumber(ARGV[3])
+
+-- Prefer authoritative Redis server TIME to eliminate inter-container clock skew/monotonic drift
+local now = tonumber(ARGV[1])
+local ok, rtime = pcall(redis.call, 'TIME')
+if ok and rtime and #rtime >= 2 then
+    now = tonumber(rtime[1]) + (tonumber(rtime[2]) / 1000000.0)
+end
+
 local clearBefore = now - window
 
 redis.call('ZREMRANGEBYSCORE', key, '-inf', clearBefore)
@@ -432,6 +439,12 @@ class OFFRateLimiter:
         window_seconds: float = 60.0,
         namespace: str = "ratelimit:off_api",
     ) -> None:
+        if redis_client is None:
+            try:
+                from services.rate_limiter import get_rate_limiter
+                redis_client = get_rate_limiter()._redis_client
+            except Exception:
+                pass
         self._redis = redis_client
         self._window_seconds = window_seconds
         self._namespace = namespace
@@ -470,6 +483,11 @@ class OFFRateLimiter:
     @property
     def is_redis_coordinated(self) -> bool:
         return self._redis is not None
+
+    def set_redis_client(self, client: Optional[Any]) -> None:
+        """Inject or reset Redis client instance."""
+        with self._lock:
+            self._redis = client
 
     @property
     def worker_product_budget(self) -> int:
