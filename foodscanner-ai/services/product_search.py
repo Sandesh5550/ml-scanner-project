@@ -205,6 +205,16 @@ def _search_local_db(db: Session, query: str, limit: int = 30) -> List[Dict[str,
         if not name:
             continue
 
+        # If brand is missing in local DB, check curated Indian dataset for exact product name match
+        if not brand and name:
+            ind_df = get_indian_dataset_df()
+            if ind_df is not None and "product_name" in ind_df.columns and "brand" in ind_df.columns:
+                match = ind_df[ind_df["product_name"].astype(str).str.strip().str.lower() == name.lower()]
+                if not match.empty:
+                    cand_brand = normalize_brand(match.iloc[0].get("brand"))
+                    if cand_brand:
+                        brand = cand_brand
+
         name_lower = name.lower()
         brand_lower = (brand or "").lower()
 
@@ -477,9 +487,21 @@ def _rank_and_dedupe(items: List[Dict[str, Any]], limit: int = 25) -> List[Dict[
         if existing is None or float(existing.get("_score") or 0.0) < score:
             item_copy = dict(item)
             item_copy["_score"] = score
+            if existing is not None and not item_copy.get("brand") and existing.get("brand"):
+                item_copy["brand"] = existing.get("brand")
             best[key] = item_copy
+        elif existing is not None:
+            if not existing.get("brand") and item.get("brand"):
+                existing["brand"] = item.get("brand")
 
-    ranked = sorted(best.values(), key=lambda x: float(x.get("_score") or 0.0), reverse=True)
+    ranked = sorted(
+        best.values(),
+        key=lambda x: (
+            float(x.get("_score") or 0.0),
+            1 if x.get("brand") else 0,
+        ),
+        reverse=True,
+    )
 
     output: List[Dict[str, Any]] = []
     for r in ranked[:limit]:

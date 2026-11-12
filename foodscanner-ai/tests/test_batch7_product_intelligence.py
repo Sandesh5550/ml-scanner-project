@@ -159,6 +159,7 @@ def seed_demo_products(db_session):
                 "calories": 200.0,
                 "fat": None,
                 "saturated_fat": None,
+                "trans_fat": 0.0,
                 "sugar": None,
                 "salt": None,
                 "protein": None,
@@ -167,6 +168,14 @@ def seed_demo_products(db_session):
             },
         )
         db_session.commit()
+    else:
+        # Guarantee trans_fat is 0.0 if prod3 already exists in reused database
+        prod_id = p3["id"] if isinstance(p3, dict) else getattr(p3, "id", None)
+        if prod_id:
+            n3 = db_session.query(Nutrition).filter(Nutrition.product_id == prod_id).first()
+            if n3 and n3.trans_fat is None:
+                n3.trans_fat = 0.0
+                db_session.commit()
 
 
 # ==============================================================================

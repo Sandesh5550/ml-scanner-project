@@ -5,12 +5,14 @@ from sqlalchemy.orm import Session
 from api.main import app
 from database.db_session import get_db, SessionLocal
 from database.models import Product, Nutrition, ScanHistory, User
+from database.orm import init_db
 from services import db_service
 from services.auth_service import create_access_token
 
 
 @pytest.fixture
 def client_with_user():
+    init_db()
     db: Session = SessionLocal()
     # Find or create a test user
     user = db.query(User).filter(User.email == "parity_test@pramaan.ai").first()
@@ -26,6 +28,73 @@ def client_with_user():
         db.add(user)
         db.commit()
         db.refresh(user)
+
+    # Ensure required test products exist for parity tests
+    p1 = db_service.get_product_by_barcode(db, "8907000000001")
+    if not p1:
+        prod1 = db_service.create_product(
+            db,
+            {
+                "barcode": "8907000000001",
+                "product_name": "Batch7 Demo High Protein Bar",
+                "brand": "ProFit",
+                "nutriscore": "b",
+                "ingredients": "Oats, whey protein isolate, almonds, honey, dark chocolate",
+                "additives": None,
+            },
+        )
+        db_service.create_nutrition(
+            db,
+            {
+                "product_id": prod1.id,
+                "calories": 420.0,
+                "fat": 14.0,
+                "saturated_fat": 3.0,
+                "sugar": 12.0,
+                "salt": 0.5,
+                "protein": 22.0,
+                "fiber": 8.0,
+                "carbs": 45.0,
+            },
+        )
+        db.commit()
+
+    p3 = db_service.get_product_by_barcode(db, "8907000000003")
+    if not p3:
+        prod3 = db_service.create_product(
+            db,
+            {
+                "barcode": "8907000000003",
+                "product_name": "Batch7 Minimal Snack Incomplete Nutrition",
+                "brand": "MinimalBrand",
+                "nutriscore": None,
+                "ingredients": "Grain blend",
+                "additives": None,
+            },
+        )
+        db_service.create_nutrition(
+            db,
+            {
+                "product_id": prod3.id,
+                "calories": 200.0,
+                "fat": None,
+                "saturated_fat": None,
+                "trans_fat": 0.0,
+                "sugar": None,
+                "salt": None,
+                "protein": None,
+                "fiber": None,
+                "carbs": None,
+            },
+        )
+        db.commit()
+    else:
+        prod_obj = db.query(Product).filter(Product.barcode == "8907000000003").first()
+        if prod_obj:
+            n3 = db.query(Nutrition).filter(Nutrition.product_id == prod_obj.id).first()
+            if n3 and n3.trans_fat is None:
+                n3.trans_fat = 0.0
+                db.commit()
 
     user_id = int(user.id)
     token = create_access_token(user_id=user_id)
@@ -303,5 +372,125 @@ def test_diabetic_profile_penalty_parity(client_with_user):
         u = db.query(User).filter(User.id == user_id).first()
         if u:
             u.diet_type = None
+            db.commit()
+        db.close()
+
+
+def test_explicit_zero_trans_fat_persistence_and_serialization(client_with_user):
+    """Regression test: Explicit 0.0 trans-fat is persisted, retrieved, and serialized correctly without becoming None."""
+    client, user_id = client_with_user
+    db: Session = SessionLocal()
+    test_barcode = "8909999000001"
+
+    try:
+        # Clean any existing record
+        existing = db.query(Product).filter(Product.barcode == test_barcode).first()
+        if existing:
+            db.query(Nutrition).filter(Nutrition.product_id == existing.id).delete()
+            db.delete(existing)
+            db.commit()
+
+        prod = db_service.create_product(
+            db,
+            {
+                "barcode": test_barcode,
+                "product_name": "Zero Trans Fat Test Biscuit",
+                "brand": "TestBakery",
+                "nutriscore": "c",
+                "ingredients": "Wheat flour, vegetable oil, salt",
+            },
+        )
+        db_service.create_nutrition(
+            db,
+            {
+                "product_id": prod.id,
+                "calories": 350.0,
+                "fat": 10.0,
+                "saturated_fat": 3.0,
+                "trans_fat": 0.0,  # Explicit 0.0
+                "sugar": None,     # Missing disclosure
+                "salt": 0.5,
+                "protein": 7.0,
+                "fiber": 2.0,
+                "carbs": 55.0,
+            },
+        )
+        db.commit()
+
+        # Query endpoint
+        resp = client.get(f"/product/{test_barcode}")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        nutr = data["product"]["nutrition"]
+        assert nutr["trans_fat"] == 0.0, "Explicit 0.0 trans_fat must be preserved"
+        assert nutr["trans_fat"] is not None
+        assert nutr["sugar"] is None, "Missing sugar disclosure must remain None"
+        assert nutr["trans_fat"] != nutr["sugar"]
+
+    finally:
+        p = db.query(Product).filter(Product.barcode == test_barcode).first()
+        if p:
+            db.query(Nutrition).filter(Nutrition.product_id == p.id).delete()
+            db.delete(p)
+            db.commit()
+        db.close()
+
+
+def test_missing_trans_fat_remains_none(client_with_user):
+    """Regression test: Missing trans-fat disclosure is never coerced or fabricated into 0.0."""
+    client, user_id = client_with_user
+    db: Session = SessionLocal()
+    test_barcode = "8909999000002"
+
+    try:
+        # Clean any existing record
+        existing = db.query(Product).filter(Product.barcode == test_barcode).first()
+        if existing:
+            db.query(Nutrition).filter(Nutrition.product_id == existing.id).delete()
+            db.delete(existing)
+            db.commit()
+
+        prod = db_service.create_product(
+            db,
+            {
+                "barcode": test_barcode,
+                "product_name": "Missing Trans Fat Test Snack",
+                "brand": "TestBrand",
+                "nutriscore": "d",
+                "ingredients": "Puffed rice, seasoning",
+            },
+        )
+        db_service.create_nutrition(
+            db,
+            {
+                "product_id": prod.id,
+                "calories": 180.0,
+                "fat": 4.0,
+                "saturated_fat": 1.0,
+                "trans_fat": None,  # Missing disclosure
+                "sugar": 2.0,       # Explicit value
+                "salt": 0.3,
+                "protein": 3.0,
+                "fiber": 1.0,
+                "carbs": 32.0,
+            },
+        )
+        db.commit()
+
+        # Query endpoint
+        resp = client.get(f"/product/{test_barcode}")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        nutr = data["product"]["nutrition"]
+        assert nutr["trans_fat"] is None, "Missing trans_fat disclosure must remain None"
+        assert nutr["sugar"] == 2.0, "Explicit sugar must remain 2.0"
+
+    finally:
+        p = db.query(Product).filter(Product.barcode == test_barcode).first()
+        if p:
+            db.query(Nutrition).filter(Nutrition.product_id == p.id).delete()
+            db.delete(p)
             db.commit()
         db.close()
