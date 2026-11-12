@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+from schemas.batch import (
+    BatchActionTaken,
+    BatchErrorCategory,
+    BatchIngestionResult,
+    BatchIngestRequest,
+    BatchItemResult,
+    BatchItemStatus,
+    BatchJobResponse,
+    BatchJobStatus,
+    BatchRetryRequest,
+    DEFAULT_MAX_BATCH_SIZE,
+)
 from schemas.product import (
     TOTAL_NUTRITION_SLOTS,
     AssessmentStatus,
@@ -18,6 +30,16 @@ from schemas.product import (
 )
 
 __all__ = [
+    "BatchActionTaken",
+    "BatchErrorCategory",
+    "BatchIngestionResult",
+    "BatchIngestRequest",
+    "BatchItemResult",
+    "BatchItemStatus",
+    "BatchJobResponse",
+    "BatchJobStatus",
+    "BatchRetryRequest",
+    "DEFAULT_MAX_BATCH_SIZE",
     "TOTAL_NUTRITION_SLOTS",
     "AssessmentStatus",
     "CanonicalProduct",

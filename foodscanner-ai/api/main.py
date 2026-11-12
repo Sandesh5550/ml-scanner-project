@@ -38,6 +38,13 @@ from services.food_health_score import compute_food_health_score, compute_diet_a
 from services.final_decision_engine import compute_final_decision
 from services.decision_explainer import build_decision_reasons
 from services.claim_verification import verify_claims
+from schemas.batch import (
+    BatchIngestRequest,
+    BatchJobResponse,
+    BatchRetryRequest,
+)
+from services.batch_ingestion_service import get_default_batch_ingestion_service
+from services.sync_job_manager import get_default_job_manager
 from services.product_data_service import get_default_product_data_service
 from services.scoring_engine import get_default_scoring_engine
 from services.off_client import canonical_to_legacy_dict
@@ -118,6 +125,13 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Startup stale OCR job recovery warning: %s", exc)
 
+    try:
+        reaped_batch_count = get_default_job_manager().recover_stale_jobs()
+        if reaped_batch_count > 0:
+            logger.info("Startup sweep recovered %d stale batch ingestion jobs.", reaped_batch_count)
+    except Exception as exc:
+        logger.warning("Startup stale batch job recovery warning: %s", exc)
+
     # Initialize rate limiter background cleanup
     rate_limiter = get_rate_limiter()
     await rate_limiter.start_background_cleanup()
@@ -127,6 +141,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await rate_limiter.stop_background_cleanup()
+        try:
+            get_default_job_manager().shutdown()
+        except Exception:
+            pass
 
 
 app = FastAPI(
@@ -1841,3 +1859,106 @@ def chat_endpoint(
     except Exception as exc:
         logging.error(f"Chat endpoint error: {exc}")
         raise HTTPException(status_code=500, detail="An error occurred while processing the chat request")
+
+
+# ==============================================================================
+# PHASE 8: BATCH INGESTION & BACKGROUND SYNCHRONIZATION ENDPOINTS
+# ==============================================================================
+
+def execute_batch_job_background_task(job_id: str) -> None:
+    """Execute batch ingestion job in a background task and persist results."""
+    job_mgr = get_default_job_manager()
+    try:
+        asyncio.run(job_mgr.execute_job(job_id))
+    except Exception as exc:
+        logger.exception("Background task execution failed for batch job %s: %s", job_id, exc)
+
+
+@app.post("/batch/ingest", tags=["batch"])
+async def ingest_batch_endpoint(
+    payload: BatchIngestRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+):
+    """Ingest a batch of product barcodes with bounded concurrency, retry, and background processing.
+
+    - If async_job=True (default): Enqueues job to background worker and returns 202 Accepted with job status URL.
+    - If async_job=False: Processes batch synchronously and returns complete aggregate results.
+    - Zero scan history writes: Batch operations never pollute the user scan history log.
+    """
+    enforce_rate_limit("batch", request, user_id=current_user.id)
+
+    if not payload.barcodes:
+        raise HTTPException(status_code=400, detail="Barcodes list cannot be empty.")
+
+    job_mgr = get_default_job_manager()
+
+    if payload.async_job:
+        job = job_mgr.create_job(
+            barcodes=payload.barcodes,
+            force_refresh=payload.force_refresh,
+        )
+        background_tasks.add_task(execute_batch_job_background_task, job.job_id)
+        base_url = str(request.base_url).rstrip("/")
+        return JSONResponse(
+            status_code=202,
+            content=job.to_response(base_url).model_dump(),
+        )
+    else:
+        # Synchronous execution
+        batch_service = get_default_batch_ingestion_service()
+        try:
+            result = await batch_service.ingest_batch_async(
+                barcodes=payload.barcodes,
+                force_refresh=payload.force_refresh,
+            )
+            return result.model_dump()
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as exc:
+            logger.exception("Synchronous batch ingestion failed: %s", exc)
+            raise HTTPException(status_code=500, detail="Batch ingestion failed.")
+
+
+@app.get("/batch/jobs/{job_id}", tags=["batch"])
+def get_batch_job_endpoint(
+    job_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """Retrieve execution status, statistics, and per-item results for a background batch ingestion job."""
+    enforce_rate_limit("batch_job", request, user_id=current_user.id)
+    clean_job_id = str(job_id).strip()
+    job_mgr = get_default_job_manager()
+    job = job_mgr.get_job(clean_job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Batch job '{clean_job_id}' not found.")
+    base_url = str(request.base_url).rstrip("/")
+    return job.to_response(base_url).model_dump()
+
+
+@app.post("/batch/jobs/{job_id}/retry", tags=["batch"])
+def retry_batch_job_endpoint(
+    job_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    payload: BatchRetryRequest = BatchRetryRequest(),
+    current_user: User = Depends(get_current_user),
+):
+    """Retry failed and unverified barcodes from an eligible completed or failed batch job."""
+    enforce_rate_limit("batch", request, user_id=current_user.id)
+    clean_job_id = str(job_id).strip()
+    job_mgr = get_default_job_manager()
+    force_refresh = payload.force_refresh if payload else None
+    try:
+        retry_job = job_mgr.retry_job(clean_job_id, force_refresh=force_refresh)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    background_tasks.add_task(execute_batch_job_background_task, retry_job.job_id)
+    base_url = str(request.base_url).rstrip("/")
+    return JSONResponse(
+        status_code=202,
+        content=retry_job.to_response(base_url).model_dump(),
+    )

@@ -459,10 +459,108 @@ The mobile application dynamically normalizes backend assessment metadata throug
 - **TypeScript Type Check**: `npx tsc --noEmit` — **Clean, 0 errors**.
 - **Backend Test Suite Parity**: `pytest foodscanner-ai/tests` — **638 passed, 3 skipped, 0 failed** in 94.88s.
 
-### I. Known Limitations & Deferred Work
-- Background enrichment script for existing incomplete products is deferred to **Phase 8**.
-- Cross-endpoint consistency and benchmark regression suite is deferred to **Phase 9**.
-- Prometheus monitoring metrics and deployment configuration are deferred to **Phase 10**.
+### I. Phase 8 — Batch Ingestion & Background Sync
+
+Phase 8 implements an enterprise-grade, resilient batch ingestion engine and background synchronization pipeline for catalog enrichment, ensuring bounded concurrency, fault isolation, restart-safe job persistence, and strict data integrity.
+
+#### 1. Architecture & Component Responsibilities
+1. **`BatchIngestionService` (`foodscanner-ai/services/batch_ingestion_service.py`)**:
+   - High-throughput, bounded concurrency ingestion service supporting both asynchronous (`ingest_batch_async`) and synchronous (`ingest_batch`) workflows.
+   - Regulates external traffic via `asyncio.Semaphore` (default: 2, configurable via `BATCH_INGESTION_CONCURRENCY`, clamped between 1 and 5) to protect OpenFoodFacts rate limits and prevent database connection exhaustion.
+   - Enforces strict input validation and normalization (digits 3–14 chars, standard `IND-` dataset prefixes; rejects malformed identifiers safely).
+   - In-batch deduplication: first occurrence is processed, subsequent identical barcodes are marked `SKIPPED` with `action_taken=DUPLICATE_IN_BATCH`.
+   - Fault isolation: individual product failures (404, 429, 5xx, timeouts) are captured per-item without terminating the remaining batch items.
+   - Enforces configurable batch size ceiling (`DEFAULT_MAX_BATCH_SIZE = 100`, clamped up to 500).
+
+2. **`BatchJobManager` (`foodscanner-ai/services/sync_job_manager.py`)**:
+   - Single-process, synchronized background job manager with persistent state storage.
+   - Process-local synchronization: synchronizes in-memory job-manager operations within a single application process via `threading.RLock`.
+   - Atomic disk persistence: writes `<job_id>.json` files via temporary file creation and atomic `os.replace` to `foodscanner-ai/data/batch_jobs/`. (Note: `os.replace` provides atomic file replacement to prevent partially written JSON files, but does not prevent concurrent last-write-wins updates from separate processes).
+   - Hydrates persisted job metadata on startup, preserving job history and status records across application restarts. Pending or in-flight task execution is not durable; interrupted jobs are marked FAILED after the configured recovery timeout and require manual resubmission.
+   - Duplicate active job prevention: detects identical in-flight batches (`status in ("PENDING", "RUNNING")`) and coalesces execution within the current process, avoiding redundant background processing.
+   - Stale job recovery sweep: on application startup (`lifespan`), automatically reaps abandoned jobs exceeding timeout (default: 600s) and transitions them to `FAILED` with `error_category=TIMEOUT_OR_PROCESS_RESTART`.
+   - Controlled retry: `retry_job(job_id)` isolates only the failed/unresolved barcodes from a previous run and enqueues an incremental retry job with incremented `attempt_count`.
+   - Graceful shutdown: on application shutdown (`lifespan`), sets shutdown event and flushes in-memory job state to disk.
+
+3. **Background Enrichment Script (`foodscanner-ai/scripts/enrich_incomplete_products.py`)**:
+   - Production CLI utility for safe, non-destructive background enrichment of existing database products.
+   - Queries candidate products from the local database via `db_service.get_enrichment_candidates()` based on missing mandatory statutory nutrition (`calories`, `sugar`, `fat`, `salt`/`sodium`) or stale fetch timestamps (> 30 days TTL).
+   - Supports CLI flags: `--limit`, `--batch-size`, `--concurrency`, `--force-refresh`, `--stale-only`, `--incomplete-only`, `--dry-run`, and explicit `--barcodes`.
+   - Emits structured execution summaries detailing newly fetched products, merged products, cache hits, curated CSV fallbacks, and execution duration.
+
+4. **Database Enrichment Query (`foodscanner-ai/services/db_service.py:get_enrichment_candidates`)**:
+   - Optimized query identifying products with stale timestamps (`last_fetched_at` is NULL, empty, or older than 30 days) or incomplete nutritional disclosures (`nutrition_completeness < 1.0` or missing mandatory dimensions).
+   - Orders candidates by `Product.id.desc()` to prioritize newly cataloged items.
+
+5. **Batch Schemas (`foodscanner-ai/schemas/batch.py`)**:
+   - Fully typed Pydantic v2 schemas: `BatchItemResult`, `BatchIngestionResult`, `BatchJobResponse`, `BatchIngestRequest`, `BatchRetryRequest`, `BatchJobStatus`, `BatchItemStatus`, `BatchActionTaken`, `BatchErrorCategory`.
+   - Calls `.model_rebuild()` across all models for seamless OpenAPI schema generation and runtime introspection.
+
+#### 2. Retry, Backoff & Error Classification Policy
+- **Transient Failures (Eligible for Retry)**:
+  - Network timeouts (`asyncio.TimeoutError`, `httpx.TimeoutException`).
+  - HTTP 429 (`RATE_LIMITED`): inspects and honors `Retry-After` header if present.
+  - HTTP 500, 502, 503, 504 (`SERVER_ERROR`): applies exponential backoff with full jitter.
+  - Temporary database lock contention: retries with backoff.
+- **Permanent Failures (Fail Fast, Zero Retries)**:
+  - HTTP 404 (`NOT_FOUND`): product not found in OpenFoodFacts or local datasets; recorded immediately as `NOT_FOUND` without wasting retry quota.
+  - Malformed barcodes (`INVALID_IDENTIFIER`): rejected during pre-validation.
+- **Backoff Formula**:
+  - `delay = min(max_backoff, base_backoff * (2 ** attempt)) + random.uniform(0.0, 0.25 * calculated)`.
+  - Default: `base_backoff = 0.5s`, `max_backoff = 5.0s`, `max_retries = 2`.
+  - Max retries exhaustion records `MAX_RETRIES_EXCEEDED` without leaking credentials or internal request URLs in logs.
+
+#### 3. Idempotency & Data Integrity Invariants
+- **Cache-Fresh Serving**: Products with `last_fetched_at` < 30 days TTL are served directly from the database (`action_taken=CACHED_FRESH`, `status=SUCCESS`) with zero external network egress when `force_refresh=False`.
+- **`ADMIN_VERIFIED` Protection**: Automated batch updates strictly refuse to overwrite `ADMIN_VERIFIED` product attributes or field-level provenance.
+- **Non-Destructive Merge**: Missing external values (`None`) never overwrite existing valid attributes in the database.
+- **Explicit Zero Preservation**: Explicit numeric zero (`0.0g` sugar, `0 kcal`) is strictly preserved and never treated as missing.
+- **Barcode Integrity**: Different barcodes are never merged; unique formulations remain strictly isolated.
+- **Scan History Isolation**: Batch ingestion endpoints strictly do NOT write to `scan_history` (`Scan != Eat` invariant).
+- **Authoritative Scoring Preservation**: Batch ingestion handles product retrieval, quality-aware merging, and storage without altering `UniversalScoringEngine` calculations.
+
+#### 4. API Endpoints
+1. **`POST /batch/ingest`**:
+   - Enforces authentication: `current_user: User = Depends(get_current_user)`.
+   - Rate limited: `enforce_rate_limit("batch", request, user_id=current_user.id)`.
+   - `async_job=True` (default): enqueues job to background worker and returns `202 Accepted` with `job_id`, `status="PENDING"`, and `status_url="/batch/jobs/{job_id}"`.
+   - `async_job=False`: executes synchronously and returns `200 OK` with complete `BatchIngestionResult`.
+2. **`GET /batch/jobs/{job_id}`**:
+   - Enforces authentication: `current_user: User = Depends(get_current_user)`.
+   - Rate limited: `enforce_rate_limit("batch_job", request, user_id=current_user.id)`.
+   - Returns `BatchJobResponse` with lifecycle status, counts, duration, and per-item results.
+3. **`POST /batch/jobs/{job_id}/retry`**:
+   - Enforces authentication: `current_user: User = Depends(get_current_user)`.
+   - Re-enqueues only failed/unresolved barcodes from a previously completed or failed job. Returns `202 Accepted` with retry job details.
+
+#### 5. Concurrency Classification & Architectural Boundaries
+Phase 8 supports synchronized job-manager operations within a single application process through a process-local `threading.RLock`. It does not provide multi-process or distributed concurrency safety. Atomic file replacement protects against partially written JSON files but does not prevent concurrent updates from separate processes.
+
+- **Single-Process, Multi-Thread Execution**:
+  - Job-manager operations protected by `threading.RLock` are synchronized within one process.
+  - The lock protects the relevant in-memory job-manager operations (`create_job`, `get_job`, `execute_job` state transitions, `recover_stale_jobs`, `retry_job`, and `shutdown`).
+  - Python's GIL does not guarantee application-level thread safety; thread safety for job-manager state relies on explicit synchronization via `threading.RLock`.
+  - Not every operation in the overall ingestion system is automatically thread-safe; external network I/O and database sessions operate independently outside the manager lock with per-worker database sessions (`SessionLocal()`).
+- **Multi-Process Execution (Not Supported)**:
+  - Not supported by the current JSON-based job manager.
+  - Each process has its own lock and in-memory job dictionary.
+  - `os.replace()` provides atomic file replacement but does not prevent concurrent last-write-wins updates.
+  - Multiple Uvicorn worker processes (`--workers > 1`) can cause inconsistent job metadata, split-brain in-memory state, and duplicate job execution.
+- **Distributed Execution (Not Supported)**:
+  - Not supported in Phase 8.
+  - Requires shared coordination and durable job infrastructure (e.g. Redis/Celery and distributed locking), planned for a future architecture phase (Phase 10).
+
+#### 6. Verification Results
+- **New Dedicated Phase 8 Test Suite**: `foodscanner-ai/tests/test_batch_ingestion.py` — **26 passed, 0 failed** in 0.77s.
+- **Full Backend Test Suite**: `pytest foodscanner-ai/tests` — **664 passed, 3 skipped, 0 failed** (baseline: 638 passed + 26 new Phase 8 tests).
+- **Full Mobile Test Suite**: `node --test foodscanner-mobile/tests/*.test.js` — **125 passed, 0 failed** in 241ms.
+- **Expo Linter**: `npm run lint` — **Clean, 0 errors**.
+- **TypeScript Type Check**: `npx tsc --noEmit` — **Clean, 0 errors**.
+
+### J. Known Limitations & Deferred Work
+- Cross-endpoint scoring consistency and benchmark regression suite is deferred to **Phase 9**.
+- Multi-process worker clustering and distributed queue execution (Redis/Celery, distributed locking, and horizontal worker scaling) are deferred to **Phase 10**.
+- Prometheus monitoring metrics, Grafana dashboards, and production deployment hardening are deferred to **Phase 10**.
 
 ## 7. Database Schema Migration Plan (Alembic 004)
 
@@ -637,7 +735,14 @@ Phase 10: Production Deployment, Monitoring & ODbL Compliance
 | **Create** | `foodscanner-ai/services/off_client.py` | Phase 3 | Isolated OFF client with 10 req/min budget & caching |
 | **Create** | `foodscanner-ai/services/product_data_service.py` | Phase 4 | DB-first lookup, quality-aware merge, variant isolation, concurrency |
 | **Create** | `foodscanner-ai/services/scoring_engine.py` | Phase 5 | Universal scoring engine with explicit UNASSESSABLE policy |
+| **Create** | `foodscanner-ai/schemas/batch.py` | Phase 8 | Pydantic v2 schemas for batch ingestion, job requests, responses, and item outcomes |
+| **Create** | `foodscanner-ai/services/batch_ingestion_service.py` | Phase 8 | Bounded-concurrency batch ingestion service with retry, backoff, and isolation |
+| **Create** | `foodscanner-ai/services/sync_job_manager.py` | Phase 8 | Persistent background job manager with atomic file storage, reaper, and retry |
 | **Create** | `foodscanner-ai/scripts/enrich_incomplete_products.py` | Phase 8 | Safe non-destructive background enrichment script |
+| **Create** | `foodscanner-ai/tests/test_batch_ingestion.py` | Phase 8 | Comprehensive test suite for batch ingestion, concurrency, retries, and jobs |
+| **Modify** | `foodscanner-ai/services/db_service.py` | Phase 8 | Added `get_enrichment_candidates` query helper |
+| **Modify** | `foodscanner-ai/services/rate_limiter.py` | Phase 8 | Added `batch` and `batch_job` rate limit categories |
+| **Modify** | `foodscanner-ai/api/main.py` | Phase 8 | Added `/batch/ingest`, `/batch/jobs/{id}`, `/batch/jobs/{id}/retry` and lifespan hooks |
 | **Create** | `foodscanner-ai/tests/test_canonical_schemas.py` | Phase 1 | Unit tests for canonical schemas |
 | **Create** | `foodscanner-ai/tests/test_off_client.py` | Phase 3 | Unit tests for OFF client and rate limiter |
 | **Create** | `foodscanner-ai/tests/test_product_data_service.py` | Phase 4 | Unit tests for product data service and merge rules |

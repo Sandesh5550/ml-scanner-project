@@ -368,6 +368,8 @@ class SlidingWindowRateLimiter:
             "product": (_parse_int_env("RATE_LIMIT_PRODUCT", 30, min_val=1), window),
             "claims": (_parse_int_env("RATE_LIMIT_CLAIMS", 20, min_val=1), window),
             "ocr_job": (_parse_int_env("RATE_LIMIT_OCR_JOB", 60, min_val=1), window),
+            "batch": (_parse_int_env("RATE_LIMIT_BATCH", 10, min_val=1), window),
+            "batch_job": (_parse_int_env("RATE_LIMIT_BATCH_JOB", 60, min_val=1), window),
         }
 
     def get_client_threshold(self, endpoint_key: str, client_key: str) -> Tuple[int, int]:

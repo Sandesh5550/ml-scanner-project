@@ -916,3 +916,52 @@ def update_food_log(db: Session, log_id: int, user_id: int, updates: dict[str, A
     db.commit()
     db.refresh(log)
     return log
+
+
+def get_enrichment_candidates(
+    db: Session,
+    limit: int = 50,
+    stale_only: bool = False,
+    incomplete_only: bool = False,
+    cache_ttl_days: int = 30,
+) -> list[Product]:
+    """Retrieve products from local database eligible for background enrichment.
+
+    Candidates are selected if:
+    - Data is stale (last_fetched_at is NULL, empty, or older than cache_ttl_days).
+    - Nutrition is incomplete (nutrition_completeness < 1.0 or missing core mandatory nutrients).
+    """
+    from sqlalchemy import or_
+
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=cache_ttl_days)
+    cutoff_str = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
+    cutoff_iso = cutoff_dt.isoformat()
+
+    query = select(Product).outerjoin(Nutrition, Product.id == Nutrition.product_id)
+
+    stale_cond = or_(
+        Product.last_fetched_at.is_(None),
+        Product.last_fetched_at == "",
+        Product.last_fetched_at < cutoff_str,
+        Product.last_fetched_at < cutoff_iso,
+    )
+
+    incomplete_cond = or_(
+        Product.nutrition_completeness.is_(None),
+        Product.nutrition_completeness < 1.0,
+        Nutrition.id.is_(None),
+        Nutrition.calories.is_(None),
+        Nutrition.sugar.is_(None),
+        Nutrition.fat.is_(None),
+        and_(Nutrition.salt.is_(None), Nutrition.sodium.is_(None)),
+    )
+
+    if stale_only:
+        query = query.where(stale_cond)
+    elif incomplete_only:
+        query = query.where(incomplete_cond)
+    else:
+        query = query.where(or_(stale_cond, incomplete_cond))
+
+    query = query.order_by(Product.id.desc()).limit(max(1, min(limit, 500)))
+    return list(db.execute(query).scalars().all())
