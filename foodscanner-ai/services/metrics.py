@@ -86,6 +86,34 @@ DATABASE_CONNECTED = Gauge(
     registry=METRICS_REGISTRY,
 )
 
+REDIS_CONNECTED = Gauge(
+    "redis_connected",
+    "Redis connectivity status (1 for connected/healthy, 0 for disconnected/unhealthy)",
+    registry=METRICS_REGISTRY,
+)
+
+# 5. Batch Ingestion & External Integration Metrics
+BATCH_JOBS_TOTAL = Counter(
+    "batch_jobs_total",
+    "Total batch ingestion jobs processed by terminal status",
+    ["status"],
+    registry=METRICS_REGISTRY,
+)
+
+BATCH_JOB_DURATION_SECONDS = Histogram(
+    "batch_job_duration_seconds",
+    "Duration of batch ingestion jobs in seconds",
+    buckets=(0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
+    registry=METRICS_REGISTRY,
+)
+
+EXTERNAL_OFF_FAILURES_TOTAL = Counter(
+    "external_off_failures_total",
+    "Total OpenFoodFacts API request failures by reason category",
+    ["reason"],
+    registry=METRICS_REGISTRY,
+)
+
 
 def init_metrics() -> None:
     """Pre-initialize known, bounded label combinations to 0.0.
@@ -96,18 +124,23 @@ def init_metrics() -> None:
     """
     # Initialize to 0.0 (unconnected) until verified by runtime connection check
     DATABASE_CONNECTED.set(0.0)
+    REDIS_CONNECTED.set(0.0)
 
     for mode in ("sync", "async"):
         OCR_JOBS_TOTAL.labels(mode=mode)
 
     for status in ("completed", "failed"):
         OCR_JOB_STATUS_TOTAL.labels(status=status)
+        BATCH_JOBS_TOTAL.labels(status=status)
 
     for level in ("high", "medium", "low"):
         OCR_CONFIDENCE_TOTAL.labels(level=level)
 
-    for endpoint in ("auth", "ocr", "scan", "chat"):
+    for endpoint in ("auth", "ocr", "scan", "chat", "batch", "batch_job"):
         RATE_LIMIT_EXCEEDED_TOTAL.labels(endpoint=endpoint)
+
+    for reason in ("rate_limited", "network_unavailable", "server_error", "timeout", "other"):
+        EXTERNAL_OFF_FAILURES_TOTAL.labels(reason=reason)
 
 
 # Initialize bounded metric series on module load
@@ -150,10 +183,19 @@ def normalize_metric_endpoint(raw_path: str, matched_route: Optional[str] = None
         "/report/weekly",
         "/report/goal",
         "/chat",
+        "/ready",
+        "/health/ready",
+        "/auth/logout",
+        "/auth/refresh",
+        "/batch/ingest",
     }:
         return path
 
     # Dynamic path pattern normalization
+    if path.startswith("/batch/jobs/"):
+        if path.endswith("/retry"):
+            return "/batch/jobs/{job_id}/retry"
+        return "/batch/jobs/{job_id}"
     if path.startswith("/ocr/jobs/"):
         return "/ocr/jobs/{job_id}"
     if path.startswith("/product/"):
@@ -271,6 +313,36 @@ def record_database_status(is_connected: bool) -> None:
         DATABASE_CONNECTED.set(1.0 if is_connected else 0.0)
     except Exception as exc:
         logger.debug("Error recording database status metric: %s", exc)
+
+
+def record_redis_status(is_connected: bool) -> None:
+    """Record Redis connectivity status gauge (1.0 for connected, 0.0 for disconnected)."""
+    try:
+        REDIS_CONNECTED.set(1.0 if is_connected else 0.0)
+    except Exception as exc:
+        logger.debug("Error recording Redis status metric: %s", exc)
+
+
+def record_batch_job_status(status: str, duration_seconds: Optional[float] = None) -> None:
+    """Record terminal status and duration for a background batch ingestion job."""
+    safe_status = "completed" if str(status).lower() in ("completed", "success") else "failed"
+    try:
+        BATCH_JOBS_TOTAL.labels(status=safe_status).inc()
+        if duration_seconds is not None and duration_seconds >= 0:
+            BATCH_JOB_DURATION_SECONDS.observe(duration_seconds)
+    except Exception as exc:
+        logger.debug("Error recording batch job status metric: %s", exc)
+
+
+def record_external_off_failure(reason: str) -> None:
+    """Record external OpenFoodFacts API request failure by category."""
+    known_reasons = {"rate_limited", "network_unavailable", "server_error", "timeout", "other"}
+    clean_reason = str(reason).lower().strip()
+    safe_reason = clean_reason if clean_reason in known_reasons else "other"
+    try:
+        EXTERNAL_OFF_FAILURES_TOTAL.labels(reason=safe_reason).inc()
+    except Exception as exc:
+        logger.debug("Error recording external OFF failure metric: %s", exc)
 
 
 def get_metrics_exposition() -> Tuple[bytes, str]:

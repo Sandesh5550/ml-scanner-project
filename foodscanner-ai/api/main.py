@@ -13,10 +13,12 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
-from typing import Any
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response, status
+from typing import Any, Optional
+import httpx
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import func, select, text
@@ -31,13 +33,35 @@ from services import db_service
 from services.health_report import generate_daily_report, generate_weekly_report
 from services.score_explainer import explain_score
 from services.goal_report import generate_goal_report
-from services.auth_service import create_access_token, get_current_user, hash_password, verify_password
+from services.auth_service import (
+    claim_and_revoke_refresh_token,
+    create_access_token,
+    create_refresh_token,
+    get_current_user,
+    get_revocation_store,
+    hash_password,
+    is_token_revoked,
+    revoke_token,
+    security,
+    verify_password,
+    verify_refresh_token,
+)
 from services.ingredient_analyzer import analyze_ingredients
 from services.additive_analyzer import analyze_additives
 from services.food_health_score import compute_food_health_score, compute_diet_aware_score
 from services.final_decision_engine import compute_final_decision
 from services.decision_explainer import build_decision_reasons
 from services.claim_verification import verify_claims
+from schemas.batch import (
+    BatchIngestRequest,
+    BatchJobResponse,
+    BatchRetryRequest,
+)
+from services.batch_ingestion_service import get_default_batch_ingestion_service
+from services.sync_job_manager import get_default_job_manager
+from services.product_data_service import get_default_product_data_service
+from services.scoring_engine import get_default_scoring_engine
+from services.off_client import canonical_to_legacy_dict, get_default_off_client
 from services.ocr_service import (
     process_image_ocr,
     parse_structured_ocr,
@@ -53,12 +77,14 @@ from services.rate_limiter import enforce_rate_limit, get_rate_limiter
 from services.metrics import (
     get_metrics_exposition,
     normalize_metric_endpoint,
+    record_batch_job_status,
     record_database_status,
     record_http_request,
     record_ocr_confidence,
     record_ocr_job_created,
     record_ocr_job_status,
     record_ocr_stale_reaped,
+    record_redis_status,
 )
 
 # Load environment configuration early
@@ -88,6 +114,16 @@ def _get_allowed_origins() -> list[str]:
     return origins
 
 
+def is_admin_user(user: Optional[User]) -> bool:
+    """Determine whether user has administrator privileges without requiring DB schema changes."""
+    if not user or not user.email:
+        return False
+    admin_emails = os.environ.get("ADMIN_EMAILS", "")
+    configured = {e.strip().lower() for e in admin_emails.split(",") if e.strip()}
+    email = user.email.strip().lower()
+    return email in configured or email.startswith("admin@")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Validate required runtime configuration early before accepting requests
@@ -115,15 +151,38 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Startup stale OCR job recovery warning: %s", exc)
 
-    # Initialize rate limiter background cleanup
+    try:
+        reaped_batch_count = get_default_job_manager().recover_stale_jobs()
+        if reaped_batch_count > 0:
+            logger.info("Startup sweep recovered %d stale batch ingestion jobs.", reaped_batch_count)
+    except Exception as exc:
+        logger.warning("Startup stale batch job recovery warning: %s", exc)
+
+    # Initialize rate limiter background cleanup and wire shared Redis backend
     rate_limiter = get_rate_limiter()
     await rate_limiter.start_background_cleanup()
+    redis_client = rate_limiter._get_or_init_redis()
+    if redis_client is not None:
+        get_revocation_store().set_redis_client(redis_client)
+        get_default_job_manager().set_redis_client(redis_client)
 
-    print("FoodScanner API running. For Expo Go, start uvicorn with --host 0.0.0.0 and open http://<your-lan-ip>:8000/health")
-    try:
-        yield
-    finally:
-        await rate_limiter.stop_background_cleanup()
+    # Bind application-owned AsyncClient to OpenFoodFactsClient during lifespan
+    shared_off_client = get_default_off_client()
+    async with httpx.AsyncClient(
+        headers=shared_off_client.headers,
+        timeout=shared_off_client._get_httpx_timeout(),
+    ) as lifespan_http_client:
+        shared_off_client.bind_lifespan_client(lifespan_http_client)
+        print("FoodScanner API running. For Expo Go, start uvicorn with --host 0.0.0.0 and open http://<your-lan-ip>:8000/health")
+        try:
+            yield
+        finally:
+            shared_off_client.unbind_lifespan_client()
+            await rate_limiter.stop_background_cleanup()
+            try:
+                get_default_job_manager().shutdown()
+            except Exception:
+                pass
 
 
 app = FastAPI(
@@ -167,6 +226,51 @@ async def prometheus_metrics_middleware(request: Request, call_next):
             status_code=status_code,
             duration_seconds=duration,
         )
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    # Enforce request payload size limit to prevent memory exhaustion / DoS
+    # Configurable via MAX_REQUEST_BODY_SIZE (default 15 MB)
+    max_body_bytes = int(os.environ.get("MAX_REQUEST_BODY_SIZE", str(15 * 1024 * 1024)))
+    content_length = request.headers.get("content-length")
+    transfer_encoding = request.headers.get("transfer-encoding", "").lower()
+
+    if content_length:
+        try:
+            cl = int(content_length)
+            if cl > max_body_bytes:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request payload exceeds maximum allowed size."},
+                )
+        except ValueError:
+            pass
+    elif "chunked" in transfer_encoding or request.method in ("POST", "PUT", "PATCH"):
+        # Consume stream with bounded accumulator to guard chunked/missing content-length payloads
+        body_chunks = []
+        total_bytes = 0
+        async for chunk in request.stream():
+            total_bytes += len(chunk)
+            if total_bytes > max_body_bytes:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request payload exceeds maximum allowed size."},
+                )
+            body_chunks.append(chunk)
+
+        body_bytes = b"".join(body_chunks)
+        async def receive():
+            return {"type": "http.request", "body": body_bytes, "more_body": False}
+        request = Request(request.scope, receive=receive)
+
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 class ScanRequest(BaseModel):
@@ -869,28 +973,23 @@ def analyze(
     product["ingredient_analysis"] = analyze_ingredients(product.get("ingredients"))
     product["additive_analysis"] = analyze_additives(product.get("additives"))
 
+    engine = get_default_scoring_engine()
     diet_type = getattr(current_user, "diet_type", None)
-    if diet_type:
-        health = compute_diet_aware_score(product, diet_type)
-    else:
-        health = compute_food_health_score(product)
+    assessment = engine.score_product(product, diet_type=diet_type)
 
     today_cal = db_service.get_today_calories(db, user_id=int(current_user.id))
     daily_limit = float(getattr(current_user, "daily_calorie_limit", None) or 2000)
     remaining_cal = daily_limit - today_cal
 
-    final = compute_final_decision(
-        health,
+    final = engine.evaluate_final_decision(
+        assessment.to_dict(),
         remaining_calories=float(remaining_cal),
         product_calories=float(product.get("calories") or 0.0),
     )
     product["health_score"] = final.get("health_score")
     product["final_decision"] = final.get("final_decision")
-    product["reasons"] = build_decision_reasons(product, remaining_calories=float(remaining_cal))
-
-    diet_note = final.get("diet_note")
-    if diet_note is None and isinstance(health, dict):
-        diet_note = health.get("diet_note")
+    product["reasons"] = assessment.reasons if assessment.reasons else build_decision_reasons(product, remaining_calories=float(remaining_cal))
+    diet_note = assessment.diet_note
     product["diet_note"] = diet_note
 
     nutrition_per_100g = {
@@ -976,7 +1075,12 @@ def analyze(
         },
         "personalized_analysis": personalized,
         "explanation": explanation,
+        "assessment_status": assessment.assessment_status.value,
+        "overall_confidence": assessment.overall_confidence.value,
     }
+
+    if assessment.score_range:
+        analysis_res["score_range"] = assessment.score_range.model_dump()
 
     if req.claims:
         analysis_res["claim_verification"] = verify_claims(
@@ -1011,12 +1115,14 @@ def health() -> dict:
 
 @app.get("/health/ready", tags=["tracking"])
 @app.get("/ready", tags=["tracking"])
-def readiness_check(db: Session = Depends(get_db)) -> dict:
-    """Readiness probe: verifies database connectivity and pool health."""
+def readiness_check(
+    db: Session = Depends(get_db),
+    detailed: bool = Query(False),
+) -> dict:
+    """Readiness probe: verifies database connectivity, Redis limiter state, and datasets."""
     try:
         db.execute(text("SELECT 1"))
         record_database_status(True)
-        return {"status": "ready", "database": "connected"}
     except Exception as exc:
         record_database_status(False)
         logger.error("Readiness probe database connection failure: %s", exc)
@@ -1024,6 +1130,20 @@ def readiness_check(db: Session = Depends(get_db)) -> dict:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database connection unavailable",
         )
+
+    res = {"status": "ready", "database": "connected"}
+
+    rate_limiter = get_rate_limiter()
+    if rate_limiter.is_redis_active():
+        res["redis"] = "connected"
+    elif detailed:
+        res["redis"] = "disconnected" if os.getenv("REDIS_URL") else "not_configured"
+
+    if detailed:
+        df = _get_indian_foods_df()
+        res["datasets"] = "ready" if df is not None and not df.empty else "unavailable"
+
+    return res
 
 
 @app.exception_handler(Exception)
@@ -1034,6 +1154,10 @@ async def global_unhandled_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"detail": "An internal server error occurred. Please try again later."},
     )
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(..., min_length=10)
 
 
 @app.post("/register", tags=["auth"])
@@ -1061,7 +1185,12 @@ def register(req: RegisterRequest, request: Request, db: Session = Depends(get_d
     db.refresh(user)
 
     token = create_access_token(user_id=int(user.id))
-    return {"access_token": token, "token_type": "bearer"}
+    refresh_token = create_refresh_token(user_id=int(user.id))
+    return {
+        "access_token": token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+    }
 
 
 @app.post("/login", tags=["auth"])
@@ -1077,7 +1206,66 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)) ->
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     token = create_access_token(user_id=int(user.id))
-    return {"access_token": token, "token_type": "bearer"}
+    refresh_token = create_refresh_token(user_id=int(user.id))
+    return {
+        "access_token": token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+    }
+
+
+@app.post("/auth/refresh", tags=["auth"])
+def refresh_token_endpoint(
+    req: RefreshTokenRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    enforce_rate_limit("auth", request)
+    user_id = verify_refresh_token(req.refresh_token)
+
+    # Atomic rotation & replay detection: claim and revoke the submitted refresh token
+    claimed = claim_and_revoke_refresh_token(req.refresh_token)
+    if not claimed:
+        logger.warning("Replay or duplicate refresh token attempt detected for user %d", user_id)
+        raise HTTPException(
+            status_code=401,
+            detail="Refresh token has already been used or revoked.",
+        )
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    new_access_token = create_access_token(user_id=int(user.id))
+    new_refresh_token = create_refresh_token(user_id=int(user.id))
+    return {
+        "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
+        "token_type": "bearer",
+    }
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
+
+
+@app.post("/auth/logout", tags=["auth"])
+def logout_endpoint(
+    req: LogoutRequest | None = Body(default=None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    has_cred = credentials is not None and bool(credentials.credentials)
+    has_refresh = req is not None and bool(req.refresh_token)
+    if not has_cred and not has_refresh:
+        raise HTTPException(status_code=401, detail="Missing Authorization token or refresh token")
+
+    if has_cred:
+        revoke_token(credentials.credentials)
+
+    if has_refresh:
+        revoke_token(req.refresh_token)
+
+    return {"status": "logged_out", "message": "Token has been revoked successfully."}
 
 
 @app.get("/search", tags=["products"])
@@ -1104,32 +1292,33 @@ def get_product(
     if not barcode.isdigit() or not (8 <= len(barcode) <= 14):
         raise HTTPException(status_code=400, detail="invalid barcode")
 
-    product = db_service.get_product_by_barcode(db, barcode)
-    if product is None:
+    pds = get_default_product_data_service()
+    canonical = pds.get_product_by_barcode(db=db, barcode=barcode)
+    if canonical is None:
         raise HTTPException(status_code=404, detail="product not found")
+
+    product = canonical_to_legacy_dict(canonical)
 
     product["ingredient_analysis"] = analyze_ingredients(product.get("ingredients"))
     product["additive_analysis"] = analyze_additives(product.get("additives"))
 
+    engine = get_default_scoring_engine()
     diet_type = getattr(current_user, "diet_type", None)
-    if diet_type:
-        health = compute_diet_aware_score(product, diet_type)
-    else:
-        health = compute_food_health_score(product)
+    assessment = engine.score_product(canonical, diet_type=diet_type)
 
     today_cal = db_service.get_today_calories(db, user_id=int(current_user.id)) if current_user else 0.0
     daily_limit = float(getattr(current_user, "daily_calorie_limit", None) or 2000)
     remaining_cal = daily_limit - today_cal
 
-    final = compute_final_decision(
-        health,
+    final = engine.evaluate_final_decision(
+        assessment.to_dict(),
         remaining_calories=float(remaining_cal),
         product_calories=float(product.get("calories") or 0.0),
     )
     product["health_score"] = final.get("health_score")
     product["final_decision"] = final.get("final_decision")
-    product["reasons"] = build_decision_reasons(product, remaining_calories=float(remaining_cal))
-    product["diet_note"] = health.get("diet_note")
+    product["reasons"] = assessment.reasons if assessment.reasons else build_decision_reasons(product, remaining_calories=float(remaining_cal))
+    product["diet_note"] = assessment.diet_note
 
     personalized = get_personalized_analysis(
         product=product,
@@ -1149,7 +1338,7 @@ def get_product(
         "reasons": product.get("reasons"),
     }
 
-    return {
+    resp = {
         "product": {
             "name": product.get("product_name"),
             "brand": product.get("brand"),
@@ -1172,7 +1361,14 @@ def get_product(
         "diet_note": product.get("diet_note"),
         "personalized_analysis": personalized,
         "explanation": explanation,
+        "assessment_status": assessment.assessment_status.value,
+        "overall_confidence": assessment.overall_confidence.value,
     }
+
+    if assessment.score_range:
+        resp["score_range"] = assessment.score_range.model_dump()
+
+    return resp
 
 
 @app.get("/today", tags=["tracking"])
@@ -1309,6 +1505,12 @@ def scan(
     scan_response["allergen_warnings"] = scan_response["personalized_analysis"].get("allergen_warnings", [])
     scan_response["detected_allergens"] = scan_response["personalized_analysis"].get("detected_allergens", [])
     scan_response["explanation"] = explain_score(result, getattr(current_user, "diet_type", None))
+    if result.get("assessment_status"):
+        scan_response["assessment_status"] = result.get("assessment_status")
+    if result.get("overall_confidence"):
+        scan_response["overall_confidence"] = result.get("overall_confidence")
+    if result.get("score_range"):
+        scan_response["score_range"] = result.get("score_range")
 
 
     if req.claims:
@@ -1338,7 +1540,9 @@ def verify_claims_endpoint(
     if req.barcode:
         bcode = str(req.barcode).strip()
         if bcode:
-            product = db_service.get_product_by_barcode(db, bcode)
+            pds = get_default_product_data_service()
+            canonical = pds.get_product_by_barcode(db=db, barcode=bcode)
+            product = canonical_to_legacy_dict(canonical) if canonical else None
             if product:
                 db_nutrition = {
                     "calories": product.get("calories"),
@@ -1375,7 +1579,9 @@ def alternatives_endpoint(
 
     # If barcode provided and name or nutrition missing, look up product
     if barcode:
-        prod = db_service.get_product_by_barcode(db, barcode)
+        pds = get_default_product_data_service()
+        canonical = pds.get_product_by_barcode(db=db, barcode=barcode)
+        prod = canonical_to_legacy_dict(canonical) if canonical else None
         if prod:
             if not name:
                 name = prod.get("product_name") or ""
@@ -1435,10 +1641,12 @@ def get_alternatives_by_barcode(
     if not barcode_str:
         raise HTTPException(status_code=400, detail="barcode is required")
 
-    prod = db_service.get_product_by_barcode(db, barcode_str)
-    if prod is None:
+    pds = get_default_product_data_service()
+    canonical = pds.get_product_by_barcode(db=db, barcode=barcode_str)
+    if canonical is None:
         raise HTTPException(status_code=404, detail="product not found")
 
+    prod = canonical_to_legacy_dict(canonical)
     nutrition = {
         "calories": prod.get("calories"),
         "fat": prod.get("fat"),
@@ -1477,14 +1685,16 @@ def compare(
         raise HTTPException(status_code=400, detail="product_a and product_b are required")
 
     def _find_product(query: str, param_name: str) -> dict:
-        if query.isdigit() and 8 <= len(query) <= 14:
-            p = db_service.get_product_by_barcode(db, query)
-            if p is not None:
-                return p
-        p = db_service.get_product_by_name_fuzzy(db, query, min_similarity=80.0)
+        clean_q = query.strip()
+        pds = get_default_product_data_service()
+        if clean_q.isdigit() and 8 <= len(clean_q) <= 14:
+            canonical = pds.get_product_by_barcode(db=db, barcode=clean_q)
+            if canonical is not None:
+                return canonical_to_legacy_dict(canonical)
+        p = db_service.get_product_by_name_fuzzy(db, clean_q, min_similarity=80.0)
         if p is not None:
             return p
-        ds = _csv_fuzzy_lookup(query, threshold=75.0)
+        ds = _csv_fuzzy_lookup(clean_q, threshold=75.0)
         if ds is not None:
             return ds
         raise HTTPException(status_code=404, detail=f"{param_name} not found")
@@ -1504,23 +1714,20 @@ def compare(
     if not b_enriched.get("additive_analysis"):
         b_enriched["additive_analysis"] = analyze_additives(b_enriched.get("additives"))
 
+    engine = get_default_scoring_engine()
     diet_type = getattr(current_user, "diet_type", None)
-    if diet_type:
-        a_health = compute_diet_aware_score(a_enriched, diet_type)
-        b_health = compute_diet_aware_score(b_enriched, diet_type)
-    else:
-        a_health = compute_food_health_score(a_enriched)
-        b_health = compute_food_health_score(b_enriched)
+    a_assessment = engine.score_product(a_enriched, diet_type=diet_type)
+    b_assessment = engine.score_product(b_enriched, diet_type=diet_type)
 
-    a_score_val = a_health.get("health_score")
-    b_score_val = b_health.get("health_score")
+    a_score_val = a_assessment.health_score
+    b_score_val = b_assessment.health_score
 
-    a_nutriscore = a.get("nutriscore")
+    a_nutriscore = a.get("nutriscore") or a_assessment.nutriscore or a_assessment.predicted_nutriscore
     if not a_nutriscore:
         from ml_model.predict_nutriscore import predict_nutriscore_with_fallback
         a_nutriscore = predict_nutriscore_with_fallback(a)
 
-    b_nutriscore = b.get("nutriscore")
+    b_nutriscore = b.get("nutriscore") or b_assessment.nutriscore or b_assessment.predicted_nutriscore
     if not b_nutriscore:
         from ml_model.predict_nutriscore import predict_nutriscore_with_fallback
         b_nutriscore = predict_nutriscore_with_fallback(b)
@@ -1617,6 +1824,8 @@ def compare(
             "nutriscore": a_nutriscore,
             "nutrition": a_nutrition,
             "match": a.get("_match"),
+            "assessment_status": a_assessment.assessment_status.value,
+            "overall_confidence": a_assessment.overall_confidence.value,
         },
         "product_b": {
             "name": b.get("product_name"),
@@ -1626,6 +1835,8 @@ def compare(
             "nutriscore": b_nutriscore,
             "nutrition": b_nutrition,
             "match": b.get("_match"),
+            "assessment_status": b_assessment.assessment_status.value,
+            "overall_confidence": b_assessment.overall_confidence.value,
         },
         "healthier_product": healthier,
         "reasons": reasons,
@@ -1762,21 +1973,12 @@ def explain_product(
     if not barcode_str:
         raise HTTPException(status_code=400, detail="barcode is required")
 
-    product = db_service.get_product_by_barcode(db, barcode_str)
-    if product is None:
-        try:
-            product = lookup_product(
-                db,
-                barcode_str,
-                user_id=int(current_user.id),
-                daily_calorie_limit=int(getattr(current_user, "daily_calorie_limit", None) or 2000),
-                diet_type=getattr(current_user, "diet_type", None),
-            )
-        except Exception:
-            product = None
-
-    if product is None:
+    pds = get_default_product_data_service()
+    canonical = pds.get_product_by_barcode(db=db, barcode=barcode_str)
+    if canonical is None:
         raise HTTPException(status_code=404, detail="product not found")
+
+    product = canonical_to_legacy_dict(canonical)
 
     # Enrich with ingredient/additive analysis for explanation if missing
     if not product.get("ingredient_analysis"):
@@ -1824,3 +2026,135 @@ def chat_endpoint(
     except Exception as exc:
         logging.error(f"Chat endpoint error: {exc}")
         raise HTTPException(status_code=500, detail="An error occurred while processing the chat request")
+
+
+# ==============================================================================
+# PHASE 8: BATCH INGESTION & BACKGROUND SYNCHRONIZATION ENDPOINTS
+# ==============================================================================
+
+def execute_batch_job_background_task(job_id: str) -> None:
+    """Execute batch ingestion job in a background task and persist results."""
+    job_mgr = get_default_job_manager()
+    try:
+        asyncio.run(job_mgr.execute_job(job_id))
+    except Exception as exc:
+        logger.exception("Background task execution failed for batch job %s: %s", job_id, exc)
+
+
+@app.post("/batch/ingest", tags=["batch"])
+async def ingest_batch_endpoint(
+    payload: BatchIngestRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+):
+    """Ingest a batch of product barcodes with bounded concurrency, retry, and background processing.
+
+    - If async_job=True (default): Enqueues job to background worker and returns 202 Accepted with job status URL.
+    - If async_job=False: Processes batch synchronously and returns complete aggregate results.
+    - Zero scan history writes: Batch operations never pollute the user scan history log.
+    """
+    enforce_rate_limit("batch", request, user_id=current_user.id)
+
+    if not payload.barcodes:
+        raise HTTPException(status_code=400, detail="Barcodes list cannot be empty.")
+
+    job_mgr = get_default_job_manager()
+
+    if payload.async_job:
+        job = job_mgr.create_job(
+            barcodes=payload.barcodes,
+            force_refresh=payload.force_refresh,
+            user_id=current_user.id,
+        )
+        background_tasks.add_task(execute_batch_job_background_task, job.job_id)
+        base_url = str(request.base_url).rstrip("/")
+        return JSONResponse(
+            status_code=202,
+            content=job.to_response(base_url).model_dump(),
+        )
+    else:
+        # Synchronous execution
+        batch_service = get_default_batch_ingestion_service()
+        try:
+            result = await batch_service.ingest_batch_async(
+                barcodes=payload.barcodes,
+                force_refresh=payload.force_refresh,
+            )
+            return result.model_dump()
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as exc:
+            logger.exception("Synchronous batch ingestion failed: %s", exc)
+            raise HTTPException(status_code=500, detail="Batch ingestion failed.")
+
+
+@app.get("/batch/jobs/{job_id}", tags=["batch"])
+def get_batch_job_endpoint(
+    job_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """Retrieve execution status, statistics, and per-item results for a background batch ingestion job."""
+    enforce_rate_limit("batch_job", request, user_id=current_user.id)
+    clean_job_id = str(job_id).strip()
+    job_mgr = get_default_job_manager()
+    job = job_mgr.get_job(clean_job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Batch job '{clean_job_id}' not found.")
+
+    # Restrict unowned legacy jobs (user_id is None) to administrators when strict batch ownership is enabled
+    strict_ownership = os.getenv("STRICT_BATCH_OWNERSHIP", "").strip().lower() in {"1", "true", "yes"}
+    if job.user_id is None and strict_ownership and not is_admin_user(current_user):
+        raise HTTPException(status_code=404, detail=f"Batch job '{clean_job_id}' not found.")
+
+    # Restrict owned jobs to submitting owner or system administrator (return 404 to prevent enumeration)
+    if job.user_id is not None and job.user_id != current_user.id and not is_admin_user(current_user):
+        raise HTTPException(status_code=404, detail=f"Batch job '{clean_job_id}' not found.")
+
+    base_url = str(request.base_url).rstrip("/")
+    return job.to_response(base_url).model_dump()
+
+
+@app.post("/batch/jobs/{job_id}/retry", tags=["batch"])
+def retry_batch_job_endpoint(
+    job_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    payload: BatchRetryRequest = BatchRetryRequest(),
+    current_user: User = Depends(get_current_user),
+):
+    """Retry failed and unverified barcodes from an eligible completed or failed batch job."""
+    enforce_rate_limit("batch", request, user_id=current_user.id)
+    clean_job_id = str(job_id).strip()
+    job_mgr = get_default_job_manager()
+
+    # Verify existence and ownership prior to retry (return 404 to prevent enumeration)
+    original_job = job_mgr.get_job(clean_job_id)
+    if not original_job:
+        raise HTTPException(status_code=404, detail=f"Batch job '{clean_job_id}' not found.")
+
+    # Restrict unowned legacy jobs to administrators when strict batch ownership is enabled
+    strict_ownership = os.getenv("STRICT_BATCH_OWNERSHIP", "").strip().lower() in {"1", "true", "yes"}
+    if original_job.user_id is None and strict_ownership and not is_admin_user(current_user):
+        raise HTTPException(status_code=404, detail=f"Batch job '{clean_job_id}' not found.")
+
+    if original_job.user_id is not None and original_job.user_id != current_user.id and not is_admin_user(current_user):
+        raise HTTPException(status_code=404, detail=f"Batch job '{clean_job_id}' not found.")
+
+    force_refresh = payload.force_refresh if payload else None
+    try:
+        retry_job = job_mgr.retry_job(
+            clean_job_id,
+            force_refresh=force_refresh,
+            user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    background_tasks.add_task(execute_batch_job_background_task, retry_job.job_id)
+    base_url = str(request.base_url).rstrip("/")
+    return JSONResponse(
+        status_code=202,
+        content=retry_job.to_response(base_url).model_dump(),
+    )

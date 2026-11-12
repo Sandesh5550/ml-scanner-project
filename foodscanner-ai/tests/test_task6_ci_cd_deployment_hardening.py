@@ -139,4 +139,4 @@ def test_isolated_migration_upgrade_and_downgrade(tmp_path):
     with engine.connect() as conn:
         from sqlalchemy import text
         current_rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert current_rev == "003_add_saturated_and_trans_fat"
+    assert current_rev == "004_add_provenance_and_aliases"

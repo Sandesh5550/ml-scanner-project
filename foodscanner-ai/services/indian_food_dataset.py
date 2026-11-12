@@ -43,8 +43,16 @@ def search_indian_dataset(product_name: str) -> Optional[dict]:
     else:
         row = df[mask].iloc[0]
 
+    brand_val = row.get("brand")
+    brand = (
+        str(brand_val).strip()
+        if pd.notna(brand_val) and str(brand_val).strip() and str(brand_val).strip().lower() != "nan"
+        else None
+    )
+
     return {
         "product_name": str(row.get("product_name")),
+        "brand": brand,
         "calories": _to_float(row.get("calories")),
         "fat": _to_float(row.get("fat")),
         "saturated_fat": _to_float(row.get("saturated_fat")),

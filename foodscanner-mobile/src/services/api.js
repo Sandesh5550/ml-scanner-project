@@ -1,7 +1,13 @@
 import axios from 'axios';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
-import { getToken, removeToken } from '../utils/storage';
+import {
+  getToken,
+  saveToken,
+  getRefreshToken,
+  saveRefreshToken,
+  clearTokens,
+} from '../utils/storage';
 import { resetToLogin } from '../utils/navigationRef';
 
 import {
@@ -98,21 +104,138 @@ client.interceptors.request.use(async (config) => {
 });
 
 let _isHandling401 = false;
+let _isRefreshing = false;
+let _refreshSubscribers = [];
+
+function onTokenRefreshed(newToken) {
+  _refreshSubscribers.forEach((callback) => callback(newToken));
+  _refreshSubscribers = [];
+}
+
+function onRefreshFailed(err) {
+  _refreshSubscribers.forEach((callback) => callback(null, err));
+  _refreshSubscribers = [];
+}
+
+export async function refreshAccessToken() {
+  const refreshToken = await getRefreshToken();
+  if (!refreshToken) {
+    throw new Error('No refresh token available');
+  }
+
+  // Use raw axios call to bypass client interceptors
+  const response = await axios.post(
+    `${BASE_URL}/auth/refresh`,
+    { refresh_token: refreshToken },
+    { timeout: 15000 }
+  );
+
+  const { access_token, refresh_token: newRefreshToken } = response.data || {};
+  if (!access_token) {
+    throw new Error('No access token in refresh response');
+  }
+
+  await saveToken(access_token);
+  if (newRefreshToken) {
+    await saveRefreshToken(newRefreshToken);
+  }
+  return access_token;
+}
+
+export async function logoutApi(refreshToken = null) {
+  try {
+    const payload = refreshToken ? { refresh_token: refreshToken } : {};
+    const res = await client.post('/auth/logout', payload);
+    return res.data;
+  } catch (_e) {
+    return null;
+  }
+}
 
 client.interceptors.response.use(
   (response) => response,
   async (error) => {
     const status = error?.response?.status;
-    const requestUrl = error?.config?.url || '';
+    const originalRequest = error?.config;
+    const requestUrl = originalRequest?.url || '';
 
-    // Bypass 401 interceptor for authentication attempt endpoints (/login, /register)
-    const isAuthEndpoint = requestUrl.includes('/login') || requestUrl.includes('/register');
+    // Auth endpoints where 401 means invalid credentials, not an expired session
+    const isAuthEndpoint =
+      requestUrl.includes('/login') ||
+      requestUrl.includes('/register') ||
+      requestUrl.includes('/auth/refresh') ||
+      requestUrl.includes('/auth/logout');
 
-    if (status === 401 && !isAuthEndpoint) {
+    if (status === 401 && !isAuthEndpoint && originalRequest && !originalRequest._retry) {
+      originalRequest._retry = true;
+
+      if (_isRefreshing) {
+        return new Promise((resolve, reject) => {
+          _refreshSubscribers.push((newToken, refreshErr) => {
+            if (refreshErr) {
+              reject(error);
+            } else if (newToken) {
+              originalRequest.headers = originalRequest.headers || {};
+              originalRequest.headers.Authorization = `Bearer ${newToken}`;
+              resolve(client(originalRequest));
+            } else {
+              reject(error);
+            }
+          });
+        });
+      }
+
+      _isRefreshing = true;
+
+      try {
+        const newAccessToken = await refreshAccessToken();
+        _isRefreshing = false;
+        onTokenRefreshed(newAccessToken);
+
+        originalRequest.headers = originalRequest.headers || {};
+        originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
+        return client(originalRequest);
+      } catch (refreshErr) {
+        _isRefreshing = false;
+        onRefreshFailed(refreshErr);
+
+        if (!_isHandling401) {
+          _isHandling401 = true;
+          try {
+            await clearTokens();
+            clearAuthSession();
+          } catch (_e) {
+            // ignore
+          }
+
+          if (typeof _unauthorizedHandler === 'function') {
+            try {
+              _unauthorizedHandler();
+            } catch (_e) {
+              // ignore
+            }
+          } else {
+            try {
+              resetToLogin();
+            } catch (_e) {
+              // ignore
+            }
+          }
+
+          setTimeout(() => {
+            _isHandling401 = false;
+          }, 1000);
+        }
+
+        return Promise.reject(error);
+      }
+    }
+
+    if (status === 401 && !isAuthEndpoint && originalRequest?._retry) {
       if (!_isHandling401) {
         _isHandling401 = true;
         try {
-          await removeToken();
+          await clearTokens();
           clearAuthSession();
         } catch (_e) {
           // ignore
@@ -137,6 +260,7 @@ client.interceptors.response.use(
         }, 1000);
       }
     }
+
     return Promise.reject(error);
   }
 );
@@ -165,9 +289,28 @@ export async function scanProduct(barcode, productName, claims = null) {
   return res.data;
 }
 
-export async function searchProduct(query) {
-  const res = await client.get('/search', { params: { query } });
+export async function getProduct(barcode) {
+  const res = await client.get(`/product/${encodeURIComponent(barcode)}`);
   return res.data;
+}
+
+export async function searchProduct(query, options = {}) {
+  const config = { params: { query } };
+  if (options?.signal) {
+    config.signal = options.signal;
+  }
+  const res = await client.get('/search', config);
+  const data = res?.data;
+  if (Array.isArray(data)) {
+    return data;
+  }
+  if (data && typeof data === 'object') {
+    if (Array.isArray(data.results)) return data.results;
+    if (Array.isArray(data.products)) return data.products;
+    if (Array.isArray(data.data)) return data.data;
+    if (Array.isArray(data.items)) return data.items;
+  }
+  return [];
 }
 
 export async function getDailyReport() {

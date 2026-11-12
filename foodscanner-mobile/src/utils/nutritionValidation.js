@@ -99,4 +99,4 @@ export function validateManualNutritionForm(fields = {}) {
   };
 }
 
-export { formatNutritionValue, formatNutritionWithUnit } from './formatters';
+export { formatNutritionValue, formatNutritionWithUnit, isNutrientPresent } from './formatters';

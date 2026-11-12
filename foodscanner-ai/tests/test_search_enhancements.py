@@ -152,3 +152,62 @@ def test_brand_normalization_rules():
     assert normalize_brand("liebig") == "Liebig"
     assert normalize_brand(None) is None
     assert normalize_brand("   ") is None
+
+
+def test_search_brand_retention_amul_butter(client, auth_user):
+    """Regression test: Amul Butter retains brand 'Amul' across search results and local DB fallbacks."""
+    res = client.get("/search?query=Amul%20Butter", headers=auth_user["headers"])
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data) >= 1
+
+    # Find the exact Amul Butter entry
+    amul_butter = next((p for p in data if p["product_name"] == "Amul Butter"), None)
+    assert amul_butter is not None, "Amul Butter must be present in search results"
+    assert amul_butter["brand"] == "Amul", f"Expected brand 'Amul', got {amul_butter.get('brand')}"
+    assert amul_butter["nutrition"]["calories"] in (717.0, 724.0)
+
+
+def test_search_missing_brand_remains_missing_not_fabricated(client, auth_user):
+    """Regression test: Unbranded products retain brand None in search results and are never fabricated."""
+    from database.models import Product, Nutrition
+    from services import db_service
+    db = SessionLocal()
+    unbranded_code = "8909999888888"
+    unbranded_name = "Completely Unbranded Artisan Bread 888"
+
+    try:
+        existing = db.query(Product).filter(Product.barcode == unbranded_code).first()
+        if existing:
+            db.query(Nutrition).filter(Nutrition.product_id == existing.id).delete()
+            db.delete(existing)
+            db.commit()
+
+        prod = db_service.create_product(
+            db,
+            {
+                "barcode": unbranded_code,
+                "product_name": unbranded_name,
+                "brand": None,  # Explicitly unbranded
+                "nutriscore": "b",
+                "ingredients": "Flour, water, yeast, salt",
+            },
+        )
+        db.commit()
+
+        res = client.get(f"/search?query={unbranded_name}", headers=auth_user["headers"])
+        assert res.status_code == 200
+        data = res.json()
+        assert len(data) >= 1
+
+        match = next((p for p in data if p["barcode"] == unbranded_code), None)
+        assert match is not None, "Unbranded product must be found by name"
+        assert match["brand"] is None, f"Missing brand must remain None, but got {match.get('brand')}"
+
+    finally:
+        p = db.query(Product).filter(Product.barcode == unbranded_code).first()
+        if p:
+            db.query(Nutrition).filter(Nutrition.product_id == p.id).delete()
+            db.delete(p)
+            db.commit()
+        db.close()

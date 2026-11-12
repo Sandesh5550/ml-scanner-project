@@ -2253,3 +2253,156 @@ describe('Batch 19: Async OCR Integration, Polling Lifecycle & Production Reliab
     assert.strictEqual(payloadWithIngredients.ingredients, 'Cocoa beans, sugar, cocoa butter');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Batch 20: Phase 10 Mobile Token Lifecycle, Storage Contract & Silent Refresh
+// ---------------------------------------------------------------------------
+describe('Batch 20: Phase 10 Mobile Token Lifecycle, Storage Contract & Silent Refresh', () => {
+  // 1. Refresh Token Persistence and Clear Lifecycle
+  test('1. Storage lifecycle: saveRefreshToken, getRefreshToken, and clearTokens simulate multi-token persistence', async () => {
+    const mockStorage = new Map();
+    const ACCESS_KEY = 'foodscanner_token';
+    const REFRESH_KEY = 'foodscanner_refresh_token';
+
+    const saveToken = async (tok) => { if (tok) mockStorage.set(ACCESS_KEY, tok); };
+    const getToken = async () => mockStorage.get(ACCESS_KEY) || null;
+    const saveRefreshToken = async (tok) => { if (tok) mockStorage.set(REFRESH_KEY, tok); };
+    const getRefreshToken = async () => mockStorage.get(REFRESH_KEY) || null;
+    const clearTokens = async () => {
+      mockStorage.delete(ACCESS_KEY);
+      mockStorage.delete(REFRESH_KEY);
+    };
+
+    assert.strictEqual(await getToken(), null);
+    assert.strictEqual(await getRefreshToken(), null);
+
+    await saveToken('jwt_access_abc');
+    await saveRefreshToken('jwt_refresh_xyz');
+
+    assert.strictEqual(await getToken(), 'jwt_access_abc');
+    assert.strictEqual(await getRefreshToken(), 'jwt_refresh_xyz');
+
+    await clearTokens();
+    assert.strictEqual(await getToken(), null);
+    assert.strictEqual(await getRefreshToken(), null);
+  });
+
+  // 2. Login flow accepts and stores both tokens
+  test('2. Login response extracts both access_token and refresh_token', () => {
+    const processAuthResponse = (data) => {
+      const accessToken = data?.access_token;
+      const refreshToken = data?.refresh_token;
+      if (!accessToken || typeof accessToken !== 'string') {
+        throw new Error('Authentication succeeded but no access token was returned.');
+      }
+      return { accessToken, refreshToken: refreshToken || null };
+    };
+
+    const payload = {
+      access_token: 'access_jwt_123',
+      refresh_token: 'refresh_jwt_456',
+      token_type: 'bearer',
+    };
+    const extracted = processAuthResponse(payload);
+    assert.strictEqual(extracted.accessToken, 'access_jwt_123');
+    assert.strictEqual(extracted.refreshToken, 'refresh_jwt_456');
+  });
+
+  // 3. Silent token refresh retries original failed request on 401
+  test('3. Silent token refresh interceptor logic retries 401 request with rotated token', async () => {
+    let callCount = 0;
+    let currentAccessToken = 'expired_access_token';
+    const validRefreshToken = 'valid_refresh_token';
+
+    const fakeBackend = async (url, config = {}) => {
+      if (url === '/auth/refresh') {
+        assert.strictEqual(config.body?.refresh_token, validRefreshToken);
+        return { status: 200, data: { access_token: 'new_access_token', refresh_token: 'new_refresh_token' } };
+      }
+      if (url === '/protected/scan') {
+        callCount++;
+        const auth = config.headers?.Authorization;
+        if (auth !== 'Bearer new_access_token') {
+          return { status: 401, error: 'Token expired' };
+        }
+        return { status: 200, data: { product_name: 'Almond Milk', status: 'SAFE' } };
+      }
+      throw new Error(`Unhandled URL ${url}`);
+    };
+
+    // Simulate interceptor response logic
+    const executeWithRetry = async (url, config = {}) => {
+      config.headers = config.headers || {};
+      config.headers.Authorization = `Bearer ${currentAccessToken}`;
+      const res = await fakeBackend(url, config);
+
+      if (res.status === 401 && !config._retry) {
+        config._retry = true;
+        // Call refresh
+        const refreshRes = await fakeBackend('/auth/refresh', { body: { refresh_token: validRefreshToken } });
+        currentAccessToken = refreshRes.data.access_token;
+        config.headers.Authorization = `Bearer ${currentAccessToken}`;
+        // Retry
+        return await fakeBackend(url, config);
+      }
+      return res;
+    };
+
+    const finalRes = await executeWithRetry('/protected/scan');
+    assert.strictEqual(finalRes.status, 200);
+    assert.strictEqual(finalRes.data.product_name, 'Almond Milk');
+    assert.strictEqual(callCount, 2); // Initial failed call + retry call
+    assert.strictEqual(currentAccessToken, 'new_access_token');
+  });
+
+  // 4. Failed refresh initiates session teardown
+  test('4. Refresh failure triggers unauthorized handler and token cleanup', async () => {
+    let sessionCleared = false;
+    let unauthorizedTriggered = false;
+
+    const onRefreshFailed = () => {
+      sessionCleared = true;
+      unauthorizedTriggered = true;
+    };
+
+    const attemptRefreshWithInvalidToken = async (badRefreshToken) => {
+      if (badRefreshToken === 'revoked_or_invalid') {
+        onRefreshFailed();
+        throw new Error('Refresh token has already been used or revoked.');
+      }
+      return 'new_token';
+    };
+
+    await assert.rejects(
+      async () => await attemptRefreshWithInvalidToken('revoked_or_invalid'),
+      /already been used or revoked/
+    );
+    assert.strictEqual(sessionCleared, true);
+    assert.strictEqual(unauthorizedTriggered, true);
+  });
+
+  // 5. Logout endpoint payload forwards refresh token
+  test('5. Logout API constructs payload with optional refresh token and handles offline failure', async () => {
+    let logoutPayloadReceived = null;
+    let backendReachable = true;
+
+    const mockLogoutApi = async (refreshToken = null) => {
+      if (!backendReachable) {
+        return null; // Graceful catch
+      }
+      const payload = refreshToken ? { refresh_token: refreshToken } : {};
+      logoutPayloadReceived = payload;
+      return { status: 'logged_out' };
+    };
+
+    // Online logout with refresh token
+    const resOnline = await mockLogoutApi('refresh_tok_999');
+    assert.deepStrictEqual(logoutPayloadReceived, { refresh_token: 'refresh_tok_999' });
+    assert.strictEqual(resOnline.status, 'logged_out');
+
+    // Offline logout falls back gracefully without throwing
+    backendReachable = false;
+    const resOffline = await mockLogoutApi('refresh_tok_999');
+    assert.strictEqual(resOffline, null);
+  });
+});

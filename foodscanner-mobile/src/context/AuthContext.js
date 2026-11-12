@@ -1,8 +1,14 @@
 import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { getToken, removeToken, saveToken } from '../utils/storage';
-import { setUnauthorizedHandler, clearAuthSession } from '../services/api';
+import {
+  getToken,
+  getRefreshToken,
+  saveToken,
+  saveRefreshToken,
+  clearTokens,
+} from '../utils/storage';
+import { setUnauthorizedHandler, clearAuthSession, logoutApi } from '../services/api';
 import { resetToLogin } from '../utils/navigationRef';
 
 const AuthContext = createContext();
@@ -28,9 +34,12 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
-  const login = async (token) => {
+  const login = async (token, refreshToken = null) => {
     if (!token) return;
     await saveToken(token);
+    if (refreshToken) {
+      await saveRefreshToken(refreshToken);
+    }
     setIsLoggedIn(true);
   };
 
@@ -40,7 +49,14 @@ export function AuthProvider({ children }) {
     setIsLoggingOut(true);
 
     try {
-      await removeToken();
+      const refreshToken = await getRefreshToken();
+      await logoutApi(refreshToken).catch(() => {});
+    } catch (_e) {
+      // ignore
+    }
+
+    try {
+      await clearTokens();
       clearAuthSession();
       await AsyncStorage.clear();
     } catch (_e) {

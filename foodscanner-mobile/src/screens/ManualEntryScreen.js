@@ -153,9 +153,13 @@ export default function ManualEntryScreen({ navigation, route }) {
         decision: analyzed.decision || {},
         diet_note: analyzed.diet_note || null,
         recommendations: analyzed.recommendations || [],
-        health_score: analyzed.analysis?.health_score ?? analyzed.health_score ?? 0,
-        final_decision: analyzed.decision?.final_decision ?? analyzed.final_decision ?? 'SAFE',
-        reasons: analyzed.decision?.reasons ?? analyzed.reasons ?? [],
+        health_score: analyzed.analysis?.health_score !== undefined ? analyzed.analysis.health_score : (analyzed.health_score !== undefined ? analyzed.health_score : null),
+        final_decision: analyzed.decision?.final_decision || analyzed.final_decision || null,
+        reasons: analyzed.decision?.reasons || analyzed.reasons || [],
+        assessment_status: analyzed.assessment_status || analyzed.analysis?.assessment_status || null,
+        overall_confidence: analyzed.overall_confidence || analyzed.analysis?.overall_confidence || null,
+        score_range: analyzed.score_range || analyzed.analysis?.score_range || null,
+        missing_mandatory_nutrients: analyzed.missing_mandatory_nutrients || analyzed.analysis?.missing_mandatory_nutrients || [],
       };
 
       navigation.navigate('Result', { result, timestamp: Date.now() });

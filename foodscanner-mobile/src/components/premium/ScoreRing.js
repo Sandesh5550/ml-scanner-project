@@ -3,14 +3,16 @@ import { View, Text, StyleSheet, Animated } from 'react-native';
 import { PREMIUM_COLORS, PREMIUM_SHADOWS, PREMIUM_RADIUS } from '../../theme/premiumTheme';
 
 export default function ScoreRing({
-  score = 0,
-  decision = 'SAFE', // SAFE, MODERATE, AVOID
+  score = null,
+  decision = null, // SAFE, MODERATE, AVOID
   size = 140,
   animated = true,
+  showDecision = true,
 }) {
-  const numericScore = Math.max(0, Math.min(100, Math.round(Number(score) || 0)));
+  const isScoreNumeric = score !== null && score !== undefined && !isNaN(score) && Number.isFinite(Number(score));
+  const numericScore = isScoreNumeric ? Math.max(0, Math.min(100, Math.round(Number(score)))) : null;
   const animValue = useRef(new Animated.Value(0)).current;
-  const [displayNumber, setDisplayNumber] = useState(0);
+  const [displayNumber, setDisplayNumber] = useState(isScoreNumeric ? numericScore : '—');
 
   const getMeta = () => {
     const d = String(decision || '').toUpperCase();
@@ -32,18 +34,31 @@ export default function ScoreRing({
         sub: 'Consume In Moderation',
       };
     }
+    if (d === 'AVOID') {
+      return {
+        bg: PREMIUM_COLORS.status.avoidBg,
+        fg: PREMIUM_COLORS.status.avoid,
+        label: 'AVOID',
+        ringColor: PREMIUM_COLORS.status.avoid,
+        sub: 'High Risk Profile',
+      };
+    }
     return {
-      bg: PREMIUM_COLORS.status.avoidBg,
-      fg: PREMIUM_COLORS.status.avoid,
-      label: 'AVOID',
-      ringColor: PREMIUM_COLORS.status.avoid,
-      sub: 'High Risk Profile',
+      bg: '#F1F5F9',
+      fg: '#64748B',
+      label: 'UNASSESSED',
+      ringColor: '#CBD5E1',
+      sub: 'Score Not Available',
     };
   };
 
   const meta = getMeta();
 
   useEffect(() => {
+    if (!isScoreNumeric) {
+      setDisplayNumber('—');
+      return;
+    }
     if (!animated) {
       setDisplayNumber(numericScore);
       return;
@@ -62,7 +77,7 @@ export default function ScoreRing({
     return () => {
       animValue.removeListener(listenerId);
     };
-  }, [numericScore, animated, animValue]);
+  }, [numericScore, animated, animValue, isScoreNumeric]);
 
   return (
     <View style={styles.container}>
@@ -89,16 +104,20 @@ export default function ScoreRing({
             },
           ]}
         >
-          <Text style={[styles.scoreValue, { color: meta.fg }]}>{displayNumber}</Text>
+          <Text style={[styles.scoreValue, { color: isScoreNumeric ? meta.fg : '#64748B' }]}>{displayNumber}</Text>
           <Text style={styles.scoreLabel}>HEALTH SCORE</Text>
         </View>
       </View>
 
-      <View style={[styles.statusBadge, { backgroundColor: meta.bg }]}>
-        <View style={[styles.statusDot, { backgroundColor: meta.fg }]} />
-        <Text style={[styles.statusText, { color: meta.fg }]}>{meta.label}</Text>
-      </View>
-      <Text style={styles.statusSub}>{meta.sub}</Text>
+      {showDecision && decision ? (
+        <>
+          <View style={[styles.statusBadge, { backgroundColor: meta.bg }]}>
+            <View style={[styles.statusDot, { backgroundColor: meta.fg }]} />
+            <Text style={[styles.statusText, { color: meta.fg }]}>{meta.label}</Text>
+          </View>
+          {meta.sub ? <Text style={styles.statusSub}>{meta.sub}</Text> : null}
+        </>
+      ) : null}
     </View>
   );
 }

@@ -85,10 +85,11 @@ export default function LoginScreen() {
       }
 
       const token = data?.access_token;
+      const refreshToken = data?.refresh_token;
       if (!token) {
         throw new Error('Authentication succeeded but no access token was returned.');
       }
-      await authLogin(token);
+      await authLogin(token, refreshToken);
     } catch (e) {
       const msg = getNetworkErrorMessage(e) || 'Authentication failed. Please check your credentials.';
       setErrorMessage(String(msg));

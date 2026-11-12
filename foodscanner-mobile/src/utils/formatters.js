@@ -27,6 +27,14 @@ export function formatNutritionValue(val, fallback = '0') {
   return Number(rounded.toFixed(2)).toString();
 }
 
+export function isNutrientPresent(val) {
+  if (val === null || val === undefined || val === '') {
+    return false;
+  }
+  const num = typeof val === 'number' ? val : Number(val);
+  return Number.isFinite(num) && !Number.isNaN(num);
+}
+
 export function formatNutritionWithUnit(val, unit = '', fallback = '—') {
   if (val === null || val === undefined || val === '') {
     return fallback;
