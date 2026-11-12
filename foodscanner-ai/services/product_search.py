@@ -404,57 +404,48 @@ def _search_openfoodfacts_remote(query: str, limit: int = 10) -> List[Dict[str, 
     if not q:
         return []
 
-    params = {
-        "search_terms": q,
-        "search_simple": 1,
-        "action": "process",
-        "json": 1,
-        "page_size": limit,
-    }
-
     try:
-        resp = httpx.get(
-            OPENFOODFACTS_SEARCH_URL,
-            params=params,
-            timeout=httpx.Timeout(2.5, connect=1.5),
-            headers={"User-Agent": "Pramaan-FoodScanner/1.0 (+https://github.com/pramaan)"},
-        )
-        if resp.status_code != 200:
+        from services.off_client import get_default_off_client, OFFStatus
+
+        off_client = get_default_off_client()
+        # Enforce strict 1.5-second remote search timeout and dedicated "search" rate budget (4 req/min)
+        search_res = off_client.search(query=q, limit=limit, timeout=1.5)
+
+        if search_res.status != OFFStatus.SUCCESS or not search_res.products:
             return []
-        data = resp.json()
-    except Exception:
+
+        scored: List[Dict[str, Any]] = []
+        for p in search_res.products:
+            name = _normalize_name(p.get("product_name"))
+            if not name:
+                continue
+            score = _similarity(q, name)
+            if score >= 65:
+                nutr = p.get("nutrition") or {}
+                scored.append({
+                    "barcode": str(p.get("barcode") or ""),
+                    "product_name": name,
+                    "brand": normalize_brand(p.get("brand") or p.get("brands")),
+                    "nutriscore": str(p.get("nutriscore") or "").lower() or None,
+                    "ingredients": _normalize_name(p.get("ingredients")) or None,
+                    "nutrition": {
+                        "calories": _to_optional_float(nutr.get("calories")),
+                        "fat": _to_optional_float(nutr.get("fat")),
+                        "sugar": _to_optional_float(nutr.get("sugar")),
+                        "salt": _to_optional_float(nutr.get("salt")),
+                        "protein": _to_optional_float(nutr.get("protein")),
+                        "fiber": _to_optional_float(nutr.get("fiber")),
+                        "carbs": _to_optional_float(nutr.get("carbs")),
+                    },
+                    "source": "openfoodfacts_api",
+                    "_score": score,
+                })
+
+        scored.sort(key=lambda x: x["_score"], reverse=True)
+        return scored[:limit]
+    except Exception as exc:
+        logger.warning(f"Remote OpenFoodFacts search failed gracefully: {exc}")
         return []
-
-    products = data.get("products") or []
-    scored: List[Dict[str, Any]] = []
-    for p in products:
-        name = _normalize_name(p.get("product_name"))
-        if not name:
-            continue
-        score = _similarity(q, name)
-        if score >= 65:
-            nutriments = p.get("nutriments") or {}
-            scored.append({
-                "barcode": str(p.get("code") or ""),
-                "product_name": name,
-                "brand": normalize_brand(p.get("brands")),
-                "nutriscore": str(p.get("nutriscore_grade") or "").lower() or None,
-                "ingredients": _normalize_name(p.get("ingredients_text")) or None,
-                "nutrition": {
-                    "calories": _to_optional_float(nutriments.get("energy-kcal_100g") or nutriments.get("energy_100g")),
-                    "fat": _to_optional_float(nutriments.get("fat_100g")),
-                    "sugar": _to_optional_float(nutriments.get("sugars_100g")),
-                    "salt": _to_optional_float(nutriments.get("salt_100g")),
-                    "protein": _to_optional_float(nutriments.get("proteins_100g")),
-                    "fiber": _to_optional_float(nutriments.get("fiber_100g")),
-                    "carbs": _to_optional_float(nutriments.get("carbohydrates_100g")),
-                },
-                "source": "openfoodfacts_api",
-                "_score": score,
-            })
-
-    scored.sort(key=lambda x: x["_score"], reverse=True)
-    return scored[:limit]
 
 
 def _rank_and_dedupe(items: List[Dict[str, Any]], limit: int = 25) -> List[Dict[str, Any]]:

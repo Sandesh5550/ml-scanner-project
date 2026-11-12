@@ -170,9 +170,23 @@ export async function getProduct(barcode) {
   return res.data;
 }
 
-export async function searchProduct(query) {
-  const res = await client.get('/search', { params: { query } });
-  return res.data;
+export async function searchProduct(query, options = {}) {
+  const config = { params: { query } };
+  if (options?.signal) {
+    config.signal = options.signal;
+  }
+  const res = await client.get('/search', config);
+  const data = res?.data;
+  if (Array.isArray(data)) {
+    return data;
+  }
+  if (data && typeof data === 'object') {
+    if (Array.isArray(data.results)) return data.results;
+    if (Array.isArray(data.products)) return data.products;
+    if (Array.isArray(data.data)) return data.data;
+    if (Array.isArray(data.items)) return data.items;
+  }
+  return [];
 }
 
 export async function getDailyReport() {

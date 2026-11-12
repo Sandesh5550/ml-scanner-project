@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy import Date, and_, cast, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from rapidfuzz import fuzz
 
@@ -98,6 +98,19 @@ def get_canonical_product_by_barcode(db: Session, barcode: str) -> Optional[Any]
         return None
 
     return db_product_to_canonical(product)
+
+
+def get_products_by_barcodes_bulk(db: Session, barcodes: list[str]) -> list[Product]:
+    """Bulk retrieve Product ORM records matching the given list of barcodes with eager joins."""
+    clean_barcodes = [str(b).strip() for b in barcodes if b and str(b).strip()]
+    if not clean_barcodes:
+        return []
+    stmt = (
+        select(Product)
+        .options(joinedload(Product.nutrition), selectinload(Product.aliases))
+        .where(Product.barcode.in_(clean_barcodes))
+    )
+    return list(db.execute(stmt).scalars().unique().all())
 
 
 def upsert_canonical_product(db: Session, canonical: Any) -> Any:

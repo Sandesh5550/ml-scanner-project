@@ -14,6 +14,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from typing import Any
+import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -47,7 +48,7 @@ from services.batch_ingestion_service import get_default_batch_ingestion_service
 from services.sync_job_manager import get_default_job_manager
 from services.product_data_service import get_default_product_data_service
 from services.scoring_engine import get_default_scoring_engine
-from services.off_client import canonical_to_legacy_dict
+from services.off_client import canonical_to_legacy_dict, get_default_off_client
 from services.ocr_service import (
     process_image_ocr,
     parse_structured_ocr,
@@ -136,15 +137,23 @@ async def lifespan(app: FastAPI):
     rate_limiter = get_rate_limiter()
     await rate_limiter.start_background_cleanup()
 
-    print("FoodScanner API running. For Expo Go, start uvicorn with --host 0.0.0.0 and open http://<your-lan-ip>:8000/health")
-    try:
-        yield
-    finally:
-        await rate_limiter.stop_background_cleanup()
+    # Bind application-owned AsyncClient to OpenFoodFactsClient during lifespan
+    shared_off_client = get_default_off_client()
+    async with httpx.AsyncClient(
+        headers=shared_off_client.headers,
+        timeout=shared_off_client._get_httpx_timeout(),
+    ) as lifespan_http_client:
+        shared_off_client.bind_lifespan_client(lifespan_http_client)
+        print("FoodScanner API running. For Expo Go, start uvicorn with --host 0.0.0.0 and open http://<your-lan-ip>:8000/health")
         try:
-            get_default_job_manager().shutdown()
-        except Exception:
-            pass
+            yield
+        finally:
+            shared_off_client.unbind_lifespan_client()
+            await rate_limiter.stop_background_cleanup()
+            try:
+                get_default_job_manager().shutdown()
+            except Exception:
+                pass
 
 
 app = FastAPI(

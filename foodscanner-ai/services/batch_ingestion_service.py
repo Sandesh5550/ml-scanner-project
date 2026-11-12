@@ -185,13 +185,70 @@ class BatchIngestionService:
         else:
             await asyncio.sleep(seconds)
 
+    def prefetch_existing_canonical_products(
+        self,
+        barcodes: List[str],
+        chunk_size: int = 250,
+    ) -> Dict[str, CanonicalProduct]:
+        """Prefetch existing products in chunks of 250 barcodes.
+
+        Converts ORM records into detached immutable CanonicalProduct objects.
+        Closes the read session before concurrent processing begins.
+        Ensures zero ORM objects or SQLAlchemy sessions are shared across workers.
+        """
+        clean_codes = list(dict.fromkeys(
+            [self.normalize_barcode(b) for b in barcodes if self.normalize_barcode(b) is not None]
+        ))
+        if not clean_codes:
+            return {}
+
+        from services.db_service import get_products_by_barcodes_bulk
+
+        prefetched: Dict[str, CanonicalProduct] = {}
+
+        for i in range(0, len(clean_codes), chunk_size):
+            chunk = clean_codes[i : i + chunk_size]
+            read_session: Session = self.session_factory()
+            try:
+                orm_products = get_products_by_barcodes_bulk(read_session, chunk)
+                for orm_prod in orm_products:
+                    try:
+                        canonical = db_product_to_canonical(orm_prod)
+                        if canonical.barcode:
+                            prefetched[canonical.barcode] = canonical
+                        for alias_bc in canonical.alternate_barcodes:
+                            if alias_bc and alias_bc not in prefetched:
+                                prefetched[alias_bc] = canonical
+                    except Exception as exc:
+                        logger.warning(f"Error converting prefetched product {getattr(orm_prod, 'barcode', None)}: {exc}")
+            finally:
+                read_session.close()
+
+        return prefetched
+
     async def _process_single_barcode(
         self,
         barcode: str,
         force_refresh: bool,
+        prefetched_product: Optional[CanonicalProduct] = None,
     ) -> BatchItemResult:
         """Process an individual barcode with bounded retries, exponential backoff, and isolation."""
         retries_attempted = 0
+
+        # Fast-path: Check prefetched cache first without opening a DB session!
+        if not force_refresh and prefetched_product is not None:
+            if self.product_data_service.is_fresh(prefetched_product):
+                return BatchItemResult(
+                    barcode=barcode,
+                    status=BatchItemStatus.SUCCESS,
+                    product_name=prefetched_product.product_name,
+                    brand=prefetched_product.brand,
+                    action_taken=BatchActionTaken.CACHED_FRESH,
+                    data_confidence=_extract_confidence(prefetched_product),
+                    nutrition_completeness=getattr(prefetched_product, "nutrition_completeness", None),
+                    is_fresh=True,
+                    retries_attempted=0,
+                )
 
         for attempt in range(self.max_retries + 1):
             session: Session = self.session_factory()
@@ -386,13 +443,23 @@ class BatchIngestionService:
 
         valid_count = len(valid_items_to_process)
 
+        # Stage 4: Bulk prefetch existing products in chunks of 250 barcodes
+        prefetched_cache: Dict[str, CanonicalProduct] = {}
+        if not force_refresh and valid_items_to_process:
+            valid_codes_only = [code for _, code in valid_items_to_process]
+            try:
+                prefetched_cache = self.prefetch_existing_canonical_products(valid_codes_only, chunk_size=250)
+            except Exception as exc:
+                logger.warning(f"Error during bulk prefetch; workers will fallback to per-item queries: {exc}")
+
         # Process valid items with bounded concurrency
         semaphore = asyncio.Semaphore(self.concurrency)
 
         async def _bounded_worker(item_idx: int, code: str) -> None:
             async with semaphore:
                 try:
-                    res = await self._process_single_barcode(code, force_refresh)
+                    prefetched_prod = prefetched_cache.get(code)
+                    res = await self._process_single_barcode(code, force_refresh, prefetched_product=prefetched_prod)
                     final_results[item_idx] = res
                 except Exception as exc:
                     logger.exception(f"Unhandled exception in batch worker for {code}: {exc}")

@@ -123,60 +123,118 @@ export default function HomeScreen({ navigation }) {
 
   // Product Search State
   const [searchQuery, setSearchQuery] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState(null);
   const [selectingBarcode, setSelectingBarcode] = useState(null);
 
+  // Authoritative search lifecycle refs
+  const searchRequestIdRef = useRef(0);
+  const searchAbortControllerRef = useRef(null);
+  const searchDebounceTimerRef = useRef(null);
+
   useEffect(() => {
     setHeroImageError(false);
   }, [activeHeroIndex]);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedQuery(searchQuery.trim());
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
+  /**
+   * Authoritative Invalidation Helper:
+   * Called synchronously from raw input events and clear button.
+   * Completely supersedes prior in-flight requests before React's render/effect cycle.
+   */
+  const invalidateSearch = React.useCallback((rawText) => {
+    // 1. Monotonically increment authoritative request sequence ID immediately
+    const nextReqId = ++searchRequestIdRef.current;
 
-  useEffect(() => {
-    if (!debouncedQuery || debouncedQuery.length < 2) {
+    // 2. Abort any active network request immediately
+    if (searchAbortControllerRef.current) {
+      searchAbortControllerRef.current.abort();
+      searchAbortControllerRef.current = null;
+    }
+
+    // 3. Clear any pending debounce timer
+    if (searchDebounceTimerRef.current) {
+      clearTimeout(searchDebounceTimerRef.current);
+      searchDebounceTimerRef.current = null;
+    }
+
+    // 4. Immediate state clearing for empty or 1-character queries
+    const clean = String(rawText || '').trim();
+    if (clean.length < 2) {
       setSearchResults([]);
       setSearchLoading(false);
       setSearchError(null);
-      return;
     }
 
-    let isSubscribed = true;
-    setSearchLoading(true);
-    setSearchError(null);
+    return nextReqId;
+  }, []);
 
-    searchProduct(debouncedQuery)
-      .then((data) => {
-        if (!isSubscribed) return;
-        setSearchResults(Array.isArray(data) ? data : []);
-        setSearchLoading(false);
-      })
-      .catch((err) => {
-        if (!isSubscribed) return;
-        const msg = getNetworkErrorMessage(err) || 'Failed to search products';
-        setSearchError(msg);
-        setSearchLoading(false);
-      });
+  /**
+   * Raw onChangeText Handler:
+   * Hooked directly to the TextInput to ensure synchronous invalidation.
+   */
+  const handleSearchChangeText = React.useCallback((text) => {
+    const reqId = invalidateSearch(text);
+    setSearchQuery(text);
 
-    return () => {
-      isSubscribed = false;
-    };
-  }, [debouncedQuery]);
+    const clean = text.trim();
+    if (clean.length >= 2) {
+      setSearchLoading(true);
+      setSearchError(null);
 
-  const handleClearSearch = () => {
+      // Schedule 350 ms debounce for next request
+      searchDebounceTimerRef.current = setTimeout(() => {
+        const controller = new AbortController();
+        searchAbortControllerRef.current = controller;
+
+        searchProduct(clean, { signal: controller.signal })
+          .then((data) => {
+            if (reqId === searchRequestIdRef.current) {
+              setSearchResults(Array.isArray(data) ? data : []);
+              setSearchLoading(false);
+            }
+          })
+          .catch((err) => {
+            const isAborted =
+              controller.signal.aborted ||
+              err?.name === 'AbortError' ||
+              err?.name === 'CanceledError' ||
+              err?.code === 'ERR_CANCELED';
+            if (isAborted) return;
+
+            if (reqId === searchRequestIdRef.current) {
+              const msg = getNetworkErrorMessage(err) || 'Failed to search products';
+              setSearchError(msg);
+              setSearchLoading(false);
+            }
+          })
+          .finally(() => {
+            if (reqId === searchRequestIdRef.current) {
+              searchAbortControllerRef.current = null;
+            }
+          });
+      }, 350);
+    }
+  }, [invalidateSearch]);
+
+  const handleClearSearch = React.useCallback(() => {
+    invalidateSearch('');
     setSearchQuery('');
-    setDebouncedQuery('');
-    setSearchResults([]);
-    setSearchLoading(false);
-    setSearchError(null);
-  };
+  }, [invalidateSearch]);
+
+  // Secondary safeguard: Component unmount cancellation & timer cleanup
+  useEffect(() => {
+    return () => {
+      if (searchDebounceTimerRef.current) {
+        clearTimeout(searchDebounceTimerRef.current);
+        searchDebounceTimerRef.current = null;
+      }
+      if (searchAbortControllerRef.current) {
+        searchAbortControllerRef.current.abort();
+        searchAbortControllerRef.current = null;
+      }
+    };
+  }, []);
 
   const handleSelectSearchResult = async (item) => {
     if (!item) return;
@@ -220,32 +278,72 @@ export default function HomeScreen({ navigation }) {
     }
   };
 
-  const fetchData = React.useCallback(async () => {
-    try {
-      const [p, r, t, h] = await Promise.all([
-        getUserProfile().catch(() => null),
-        getDailyReport().catch(() => null),
-        getTodayFoods().catch(() => null),
-        getHistory().catch(() => null),
-      ]);
-      if (p) setProfile(p);
-      if (r) setReport(r);
-      if (t) setTodayFoods(Array.isArray(t?.foods) ? t.foods : []);
-      if (h) setRecentScans(Array.isArray(h) ? h : Array.isArray(h?.history) ? h.history : []);
-    } catch (_e) {
-      // Gracefully retain existing state on network hiccup
-    } finally {
-      setLoading(false);
+  // Authoritative coalescing and request sequence tokens
+  const inFlightRequestRef = useRef(null);
+  const fetchRequestIdRef = useRef(0);
+
+  /**
+   * Corrected fetchData:
+   * 1. Declared as a REGULAR (non-async) function inside useCallback.
+   * 2. Returns the EXACT stored requestPromise reference when coalescing (p1 === p2).
+   * 3. Uses Promise.resolve().then(...) microtask deferral.
+   * 4. Registers inFlightRequestRef.current synchronously before microtask executes.
+   * 5. Protects against stale updates and preserves manual-refresh precedence.
+   */
+  const fetchData = React.useCallback((isManualRefresh = false) => {
+    // 1. Coalesce background calls: return exact stored Promise instance
+    if (inFlightRequestRef.current && !isManualRefresh) {
+      return inFlightRequestRef.current.promise;
     }
+
+    // 2. Monotonically increment request sequence ID
+    const currentReqId = ++fetchRequestIdRef.current;
+
+    // 3. Defer execution to microtask; register token synchronously below
+    const requestPromise = Promise.resolve()
+      .then(async () => {
+        const [p, r, t, h] = await Promise.all([
+          getUserProfile().catch(() => null),
+          getDailyReport().catch(() => null),
+          getTodayFoods().catch(() => null),
+          getHistory().catch(() => null),
+        ]);
+
+        if (currentReqId === fetchRequestIdRef.current) {
+          if (p) setProfile(p);
+          if (r) setReport(r);
+          if (t) setTodayFoods(Array.isArray(t?.foods) ? t.foods : []);
+          if (h) setRecentScans(Array.isArray(h) ? h : Array.isArray(h?.history) ? h.history : []);
+        }
+      })
+      .catch((_e) => {
+        // Silently retain existing state on transient network or parsing failure
+      })
+      .finally(() => {
+        // Identity-based reference release: only clear if this token is still active
+        if (inFlightRequestRef.current?.id === currentReqId) {
+          inFlightRequestRef.current = null;
+        }
+        // Authoritative loading clearance: only clear if no newer request superseded
+        if (currentReqId === fetchRequestIdRef.current) {
+          setLoading(false);
+        }
+      });
+
+    // 4. SYNCHRONOUS REGISTRATION: registered before the microtask executes
+    inFlightRequestRef.current = { id: currentReqId, promise: requestPromise };
+
+    // 5. Return the exact promise reference
+    return requestPromise;
   }, []);
 
   useEffect(() => {
-    fetchData();
+    fetchData(false);
   }, [fetchData]);
 
   useFocusEffect(
     React.useCallback(() => {
-      fetchData();
+      fetchData(false);
     }, [fetchData])
   );
 
@@ -402,7 +500,7 @@ export default function HomeScreen({ navigation }) {
       setDeletingId(logId);
       try {
         await deleteFoodLogItem(logId);
-        await fetchData();
+        await fetchData(true);
       } catch (err) {
         const msg = getNetworkErrorMessage(err) || 'Failed to remove food item';
         if (Platform.OS === 'web') {
@@ -477,7 +575,7 @@ export default function HomeScreen({ navigation }) {
             <TextInput
               style={styles.searchInput}
               value={searchQuery}
-              onChangeText={setSearchQuery}
+              onChangeText={handleSearchChangeText}
               placeholder="Search products, brands or ingredients…"
               placeholderTextColor={PREMIUM_COLORS.secondary}
               returnKeyType="search"
@@ -495,7 +593,7 @@ export default function HomeScreen({ navigation }) {
           </View>
 
           {/* Search Feedback / State Overlay */}
-          {debouncedQuery.length >= 2 ? (
+          {searchQuery.trim().length >= 2 ? (
             <View style={styles.searchFeedbackArea}>
               {searchLoading ? (
                 <View style={[styles.searchFeedbackCard, PREMIUM_SHADOWS.sm]}>
@@ -508,7 +606,7 @@ export default function HomeScreen({ navigation }) {
                   <Text style={styles.searchErrorText}>{searchError}</Text>
                   <TouchableOpacity
                     style={styles.searchRetryBtn}
-                    onPress={() => setDebouncedQuery(searchQuery.trim())}
+                    onPress={() => handleSearchChangeText(searchQuery)}
                   >
                     <Text style={styles.searchRetryText}>Retry</Text>
                   </TouchableOpacity>
@@ -518,7 +616,7 @@ export default function HomeScreen({ navigation }) {
                   <Ionicons name="file-tray-outline" size={28} color={PREMIUM_COLORS.secondary} style={{ marginBottom: 6 }} />
                   <Text style={styles.searchEmptyTitle}>No products found</Text>
                   <Text style={styles.searchEmptySub}>
-                    {"We couldn't find matches for \"" + debouncedQuery + '". Try searching by brand (e.g. Amul, Britannia) or ingredient.'}
+                    {"We couldn't find matches for \"" + searchQuery.trim() + '". Try searching by brand (e.g. Amul, Britannia) or ingredient.'}
                   </Text>
                 </View>
               ) : (

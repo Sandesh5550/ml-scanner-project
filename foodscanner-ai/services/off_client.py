@@ -707,6 +707,40 @@ class OpenFoodFactsClient:
         self.total_timeout = total_timeout
         self.max_retries = max_retries
 
+        # Bound lifespan AsyncClient management (FastAPI lifespan ownership)
+        self._async_client: Optional[httpx.AsyncClient] = None
+        self._async_client_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._client_lock = threading.Lock()
+
+    def bind_lifespan_client(self, client: httpx.AsyncClient) -> None:
+        """Bind application-owned AsyncClient during lifespan startup."""
+        with self._client_lock:
+            self._async_client = client
+            try:
+                self._async_client_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._async_client_loop = None
+        logger.info("Bound lifespan AsyncClient to OpenFoodFactsClient")
+
+    def unbind_lifespan_client(self) -> None:
+        """Unbind AsyncClient during lifespan shutdown."""
+        with self._client_lock:
+            self._async_client = None
+            self._async_client_loop = None
+        logger.info("Unbound lifespan AsyncClient from OpenFoodFactsClient")
+
+    def get_async_client(self) -> Optional[httpx.AsyncClient]:
+        """Retrieve bound AsyncClient if active, open, and matching running event loop."""
+        with self._client_lock:
+            if self._async_client is not None and not self._async_client.is_closed:
+                try:
+                    curr_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    curr_loop = None
+                if self._async_client_loop is None or self._async_client_loop is curr_loop:
+                    return self._async_client
+        return None
+
     @property
     def headers(self) -> Dict[str, str]:
         return {
@@ -1507,9 +1541,13 @@ class OpenFoodFactsClient:
             if not self.rate_limiter.acquire(endpoint):
                 return None, attempt, f"Rate limit budget exhausted for {endpoint}"
 
+            bound_client = self.get_async_client()
             try:
-                async with httpx.AsyncClient(timeout=client_timeout, headers=self.headers) as client:
-                    resp = await client.get(url, params=params)
+                if bound_client is not None:
+                    resp = await bound_client.get(url, params=params, timeout=client_timeout)
+                else:
+                    async with httpx.AsyncClient(timeout=client_timeout, headers=self.headers) as ephemeral_client:
+                        resp = await ephemeral_client.get(url, params=params)
             except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.TimeoutException) as exc:
                 last_error = f"Timeout: {exc}"
                 if attempt < self.max_retries:
