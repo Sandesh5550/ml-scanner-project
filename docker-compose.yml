@@ -1,6 +1,53 @@
 services:
   # ============================================================================
-  # 1. Database Migration Runner (One-shot run before backend workers start)
+  # 1. Edge API Gateway (Reverse Proxy for Web, Backend, and Monitoring)
+  # ============================================================================
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    image: pramaan-gateway:latest
+    container_name: pramaan-gateway
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-80}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:80/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    depends_on:
+      backend:
+        condition: service_healthy
+      mobile-web:
+        condition: service_healthy
+    networks:
+      - pramaan-net
+
+  # ============================================================================
+  # 2. Containerized Mobile Web Client (Expo SDK 54 / NGINX SPA)
+  # ============================================================================
+  mobile-web:
+    build:
+      context: ./foodscanner-mobile
+      dockerfile: Dockerfile
+      args:
+        - EXPO_PUBLIC_API_BASE_URL=/api
+    image: foodscanner-mobile:latest
+    container_name: pramaan-mobile-web
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:80/index.html || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - pramaan-net
+
+  # ============================================================================
+  # 3. Database Migration Runner (One-shot run before backend workers start)
   # ============================================================================
   migration:
     build:
@@ -38,7 +85,7 @@ services:
       - pramaan-net
 
   # ============================================================================
-  # 2. FastAPI Backend (PRAMAAN AI Core Engine)
+  # 4. FastAPI Backend (PRAMAAN AI Core Engine)
   # ============================================================================
   backend:
     build:
@@ -70,6 +117,7 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-pramaan_dev_password}
       - POSTGRES_DB=${POSTGRES_DB:-foodscanner_db}
       - DATABASE_URL=${DATABASE_URL:-}
+      - REDIS_URL=redis://redis:6379/0
       - FOODSCANNER_OCR_ENGINE=tesseract
       - AI_PROVIDER=mock
       - AI_MODEL=gemini-1.5-flash
@@ -88,18 +136,18 @@ services:
       postgres:
         condition: service_healthy
         required: false
+      redis:
+        condition: service_healthy
+        required: false
     networks:
       - pramaan-net
 
   # ============================================================================
-  # 3. Optional PostgreSQL Service (Activated with: docker compose --profile postgres up)
+  # 5. PostgreSQL Primary Database (Default Core Stack)
   # ============================================================================
   postgres:
     image: postgres:16-alpine
     container_name: pramaan-postgres
-    profiles:
-      - postgres
-      - full
     restart: unless-stopped
     ports:
       - "5432:5432"
@@ -118,7 +166,27 @@ services:
       - pramaan-net
 
   # ============================================================================
-  # 4. Prometheus Monitoring (Activated with: docker compose --profile monitoring up)
+  # 6. Redis Distributed Cache & Coordinator (Default Core Stack)
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: pramaan-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - pramaan-net
+
+  # ============================================================================
+  # 7. Prometheus Monitoring (Activated with: docker compose --profile monitoring up)
   # ============================================================================
   prometheus:
     image: prom/prometheus:v2.54.1
@@ -149,7 +217,27 @@ services:
       - pramaan-net
 
   # ============================================================================
-  # 5. Grafana Dashboards (Activated with: docker compose --profile monitoring up)
+  # 8. Alertmanager (Activated with: docker compose --profile monitoring up)
+  # ============================================================================
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: pramaan-alertmanager
+    profiles:
+      - monitoring
+      - full
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - pramaan-net
+
+  # ============================================================================
+  # 9. Grafana Dashboards (Activated with: docker compose --profile monitoring up)
   # ============================================================================
   grafana:
     image: grafana/grafana:11.2.0
@@ -167,6 +255,8 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/pramaan_overview.json
+      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s:%(http_port)s/grafana/
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -185,6 +275,8 @@ services:
 volumes:
   postgres_data:
     name: pramaan_postgres_data
+  redis_data:
+    name: pramaan_redis_data
   prometheus_data:
     name: pramaan_prometheus_data
   grafana_data:

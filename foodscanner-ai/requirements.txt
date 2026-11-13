@@ -21,6 +21,7 @@ easyocr
 email-validator
 alembic
 prometheus-client
+redis>=5.0.0
 
 # This file is generated from pyproject.toml
 #

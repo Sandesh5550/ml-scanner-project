@@ -27,6 +27,7 @@ dependencies = [
   "email-validator",
   "tqdm",
   "prometheus-client",
+  "redis>=5.0.0",
 ]
 
 [tool.setuptools]

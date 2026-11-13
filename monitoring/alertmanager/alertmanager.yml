@@ -1,0 +1,24 @@
+# ==============================================================================
+# Alertmanager Configuration for FoodScanner AI (PRAMAAN)
+# ==============================================================================
+
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'severity']
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 1h
+  receiver: 'blackhole-safe-default'
+
+receivers:
+  # Safe no-notification blackhole receiver (default when external webhook is unconfigured)
+  # Silently drops notifications without failing or polling dummy endpoints
+  - name: 'blackhole-safe-default'
+
+  # Optional production webhook receiver (configured when ALERT_WEBHOOK_URL is provided)
+  - name: 'webhook-channel'
+    webhook_configs:
+      - url: 'http://localhost:5001/webhook'
+        send_resolved: true
