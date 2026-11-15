@@ -19,8 +19,13 @@ from services.product_data_service import reset_default_product_data_service
 
 
 @pytest.fixture(autouse=True)
-def reset_rate_limits():
-    """Reset process-local rate limiter before and after each test for clean isolation."""
+def reset_rate_limits(monkeypatch):
+    """Isolate unit tests from shared Redis counters and reset process-local state.
+
+    Tests for Redis-backed behavior must opt in explicitly and use isolated keys.
+    The ordinary suite exercises deterministic process-local sliding-window behavior.
+    """
+    monkeypatch.delenv("REDIS_URL", raising=False)
     limiter = get_rate_limiter()
     limiter.reset()
     reset_default_off_client()
