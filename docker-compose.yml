@@ -110,6 +110,7 @@ services:
     environment:
       - PORT=8000
       - ENVIRONMENT=development
+      - ROOT_PATH=${ROOT_PATH:-/api}
       - SECRET_KEY=${SECRET_KEY:-pramaan-local-dev-secret-key-minimum-32-chars}
       - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}

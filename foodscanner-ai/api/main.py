@@ -185,9 +185,14 @@ async def lifespan(app: FastAPI):
                 pass
 
 
+# Environment-driven root_path support for reverse proxy/gateway deployments (e.g. NGINX /api)
+_raw_root_path = os.getenv("ROOT_PATH", "").strip()
+_root_path = f"/{_raw_root_path.strip('/')}" if _raw_root_path.strip("/") else ""
+
 app = FastAPI(
     title="FoodScanner AI API",
-    lifespan=lifespan
+    lifespan=lifespan,
+    root_path=_root_path,
 )
 
 app.add_middleware(
