@@ -313,7 +313,7 @@ def _search_indian_dataset(query: str, limit: int = 30) -> List[Dict[str, Any]]:
                 continue
             score = sim
 
-        name_hash = hashlib.md5(name.lower().encode("utf-8")).hexdigest()
+        name_hash = hashlib.md5(name.lower().encode("utf-8"), usedforsecurity=False).hexdigest()
         synthetic_barcode = f"IND-{name_hash}"
 
         results.append({

@@ -23,10 +23,48 @@ if env_file.exists():
     load_dotenv(dotenv_path=env_file)
 
 
+SUPPORTED_POSTGRES_SCHEMES = (
+    "postgresql://",
+    "postgres://",
+    "postgresql+psycopg2://",
+    "postgresql+asyncpg://",
+    "postgresql+pg8000://",
+    "postgresql+psycopg://",
+)
+
+
+def is_supported_postgres_url(url: str) -> bool:
+    """Check if the URL scheme matches a supported PostgreSQL SQLAlchemy dialect."""
+    if not url or not isinstance(url, str):
+        return False
+    clean = url.strip().lower()
+    return any(clean.startswith(scheme) for scheme in SUPPORTED_POSTGRES_SCHEMES)
+
+
 def resolve_database_url(url: Optional[str] = None) -> str:
     raw = (url or os.getenv("DATABASE_URL") or "").strip()
+    env = (os.getenv("ENVIRONMENT") or os.getenv("APP_ENV") or os.getenv("ENV") or "").strip().lower()
+    is_prod = env in {"production", "prod"}
+
     if not raw:
+        if is_prod:
+            raise RuntimeError(
+                "DATABASE_URL must be explicitly configured in production. "
+                "SQLite fallback is strictly forbidden in production environments."
+            )
         return f"sqlite:///{DEFAULT_DB_FILE.as_posix()}"
+
+    if is_prod:
+        if raw.startswith("sqlite"):
+            raise RuntimeError(
+                "SQLite database is strictly forbidden in production environments. "
+                "Configure a production PostgreSQL DATABASE_URL."
+            )
+        if not is_supported_postgres_url(raw):
+            raise RuntimeError(
+                "Unsupported database scheme in production. "
+                "Only PostgreSQL (e.g. postgresql://, postgresql+psycopg2://) is supported."
+            )
 
     # Normalize legacy postgres:// (standard in Render, Supabase, Heroku) to postgresql+psycopg2://
     if raw.startswith("postgres://"):

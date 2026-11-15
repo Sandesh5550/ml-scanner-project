@@ -46,8 +46,9 @@ def load_products(
                 product_rows,
             )
 
+            # Parameterized placeholder generation; no user input interpolated into query structure
             rows = conn.execute(
-                "SELECT id, barcode FROM products WHERE barcode IN ({})".format(
+                "SELECT id, barcode FROM products WHERE barcode IN ({})".format(  # nosec B608
                     ",".join(["?"] * len(product_rows))
                 ),
                 [r[0] for r in product_rows],

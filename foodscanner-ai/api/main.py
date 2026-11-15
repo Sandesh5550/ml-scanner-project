@@ -99,6 +99,13 @@ from rapidfuzz import fuzz
 def _get_allowed_origins() -> list[str]:
     raw = os.environ.get("ALLOWED_ORIGINS") or os.environ.get("CORS_ORIGINS") or ""
     configured = [o.strip() for o in raw.split(",") if o.strip()]
+    env = (os.getenv("ENVIRONMENT") or os.getenv("APP_ENV") or os.getenv("ENV") or "").strip().lower()
+    is_prod = env in {"production", "prod"}
+
+    if is_prod:
+        # In production, only explicitly configured origins are permitted (never default dev localhost ports)
+        return [o for o in configured if o != "*"]
+
     defaults = [
         "http://localhost:8081",
         "http://localhost:19006",
@@ -115,13 +122,17 @@ def _get_allowed_origins() -> list[str]:
 
 
 def is_admin_user(user: Optional[User]) -> bool:
-    """Determine whether user has administrator privileges without requiring DB schema changes."""
+    """Determine whether user has administrator privileges without requiring DB schema changes.
+    
+    Only accounts whose normalized email address is explicitly listed in ADMIN_EMAILS
+    are granted administrator privileges. Prefix matching (e.g. admin@) is strictly rejected.
+    """
     if not user or not user.email:
         return False
     admin_emails = os.environ.get("ADMIN_EMAILS", "")
     configured = {e.strip().lower() for e in admin_emails.split(",") if e.strip()}
     email = user.email.strip().lower()
-    return email in configured or email.startswith("admin@")
+    return email in configured
 
 
 @asynccontextmanager
@@ -195,10 +206,18 @@ app = FastAPI(
     root_path=_root_path,
 )
 
+_env = (os.getenv("ENVIRONMENT") or os.getenv("APP_ENV") or os.getenv("ENV") or "").strip().lower()
+_is_prod = _env in {"production", "prod"}
+_origin_regex = (
+    None
+    if _is_prod
+    else r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$"
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_allowed_origins(),
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$",
+    allow_origin_regex=_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

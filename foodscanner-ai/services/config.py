@@ -54,12 +54,44 @@ def load_environment(dotenv_path: Optional[Path | str] = None, override: bool = 
 
 INSECURE_DEV_KEYS = {
     "pramaan-local-dev-secret-key-minimum-32-chars",
+    "dev_local_secret_key_minimum_32_characters_for_docker_compose_only",
+    "replace-this-with-a-long-random-secret",
+    "ci-testing-secret-key-foodscanner-ai-pramaan",
+    "ci-testing-container-smoke-secret-key-min-32-chars",
+    "demo-readiness-test-secret-key-32chars",
+    "test-secret-key-for-refactored-endpoints-phase6",
     "dev-insecure-secret-key",
+    "your-secret-key",
     "changeme",
     "secret",
     "password",
     "12345678",
 }
+
+SUPPORTED_POSTGRES_SCHEMES = (
+    "postgresql://",
+    "postgres://",
+    "postgresql+psycopg2://",
+    "postgresql+asyncpg://",
+    "postgresql+pg8000://",
+    "postgresql+psycopg://",
+)
+
+
+def is_supported_postgres_url(url: str) -> bool:
+    """Check if the URL scheme matches a supported PostgreSQL SQLAlchemy dialect."""
+    if not url or not isinstance(url, str):
+        return False
+    clean = url.strip().lower()
+    return any(clean.startswith(scheme) for scheme in SUPPORTED_POSTGRES_SCHEMES)
+
+
+def _is_insecure_secret(secret: str) -> bool:
+    clean = secret.strip().lower()
+    if clean in INSECURE_DEV_KEYS:
+        return True
+    insecure_tokens = ["changeme", "dev-insecure", "replace-this", "your-secret", "docker_compose_only", "local-dev"]
+    return any(token in clean for token in insecure_tokens)
 
 
 def get_secret_key() -> str:
@@ -84,7 +116,7 @@ def get_secret_key() -> str:
         )
 
     if is_prod:
-        if secret.strip().lower() in INSECURE_DEV_KEYS:
+        if _is_insecure_secret(secret):
             raise RuntimeError("SECRET_KEY cannot use an insecure development placeholder in production.")
         if len(secret.strip()) < 32:
             raise RuntimeError("SECRET_KEY must be at least 32 characters long for production security.")
@@ -100,6 +132,7 @@ def validate_runtime_config(raise_error: bool = True) -> Dict[str, Any]:
       - Rejects ALLOW_INSECURE_DEV_AUTH
       - Rejects default development placeholder keys
       - Requires SECRET_KEY to have at least 32 characters
+      - Requires DATABASE_URL to be explicitly configured (no SQLite fallback)
     Returns a dictionary of validated configuration with redacted secrets.
     """
     # Attempt to load .env if SECRET_KEY is not yet in environment
@@ -122,10 +155,20 @@ def validate_runtime_config(raise_error: bool = True) -> Dict[str, Any]:
 
     # Production-specific cryptographic key validation
     if is_prod and secret:
-        if secret.strip().lower() in INSECURE_DEV_KEYS:
+        if _is_insecure_secret(secret):
             errors.append("SECRET_KEY cannot use an insecure development placeholder in production.")
         elif len(secret.strip()) < 32:
             errors.append("SECRET_KEY must be at least 32 characters long for production security.")
+
+    # Production database requirement: only supported PostgreSQL schemes are allowed in production
+    if is_prod:
+        raw_db_url = (os.environ.get("DATABASE_URL") or "").strip()
+        if not raw_db_url:
+            errors.append("DATABASE_URL must be explicitly configured in production. SQLite fallback is strictly forbidden.")
+        elif raw_db_url.startswith("sqlite"):
+            errors.append("SQLite is strictly forbidden in production environments. Configure a production PostgreSQL DATABASE_URL.")
+        elif not is_supported_postgres_url(raw_db_url):
+            errors.append("Unsupported database scheme in production. Only PostgreSQL (e.g. postgresql://, postgresql+psycopg2://) is supported.")
 
     raw_db_url = os.environ.get("DATABASE_URL")
     if raw_db_url:

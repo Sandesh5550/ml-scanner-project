@@ -17,6 +17,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  security-scan:
+    name: Security Scan (Bandit & Pip-Audit)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: foodscanner-ai
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: foodscanner-ai/requirements.txt
+
+      - name: Install Security Scanners
+        run: |
+          python -m pip install --upgrade pip
+          pip install "bandit>=1.7.5" "pip-audit>=2.7.0"
+
+      - name: Run Bandit SAST Security Scan
+        run: |
+          bandit -r services/ api/ database/ ml_model/ scanner/ -ll -ii
+
+      - name: Run Pip-Audit Dependency Vulnerability Scan
+        run: |
+          pip-audit -s osv --timeout 30 --ignore-vuln PYSEC-2026-4298 --ignore-vuln PYSEC-2026-1325 -r requirements.txt -r requirements-deploy.txt
+
   backend-tests:
     name: Backend Tests (FastAPI / Pytest)
     runs-on: ubuntu-latest

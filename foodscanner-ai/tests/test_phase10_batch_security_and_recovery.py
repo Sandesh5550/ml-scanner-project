@@ -40,15 +40,39 @@ def temp_job_manager():
 def test_is_admin_user_detection(monkeypatch):
     monkeypatch.setenv("ADMIN_EMAILS", "sysadmin@pramaan.ai, ops@pramaan.ai")
 
+    # 1. Ordinary unlisted user -> False
     u1 = User(id=1, email="user@example.com")
     assert is_admin_user(u1) is False
 
+    # 2. Explicit admin email -> True
     u2 = User(id=2, email="sysadmin@pramaan.ai")
     assert is_admin_user(u2) is True
 
-    u3 = User(id=3, email="admin@foodscanner.com")
-    assert is_admin_user(u3) is True
+    # 3. Case-insensitive matching -> True
+    u2_caps = User(id=2, email="SYSADMIN@PRAMAAN.AI")
+    assert is_admin_user(u2_caps) is True
 
+    u2_mixed = User(id=2, email="  Ops@Pramaan.AI  ")
+    assert is_admin_user(u2_mixed) is True
+
+    # 4. admin@ prefix on unlisted domain -> Strictly False (SEC-02 mitigation)
+    u_attacker = User(id=3, email="admin@attacker.com")
+    assert is_admin_user(u_attacker) is False
+
+    u_disposable = User(id=4, email="admin@disposable.org")
+    assert is_admin_user(u_disposable) is False
+
+    u_unlisted_admin = User(id=5, email="admin@foodscanner.com")
+    assert is_admin_user(u_unlisted_admin) is False
+
+    # 5. Missing or empty email -> False
+    u_none_email = User(id=6, email=None)
+    assert is_admin_user(u_none_email) is False
+
+    u_empty_email = User(id=7, email="   ")
+    assert is_admin_user(u_empty_email) is False
+
+    # 6. Null user object -> False
     assert is_admin_user(None) is False
 
 
